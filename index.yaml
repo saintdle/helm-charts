@@ -12,6 +12,6 @@ entries:
     - name: Dean Lewis
     name: pacman
     urls:
-    - https://saintdle.github.io/helm-chart/pacman-0.5.3.tgz
+    - https://saintdle.github.io/helm-charts/pacman-0.5.3.tgz
     version: 0.5.3
 generated: "2021-11-12T15:35:09.219226Z"
