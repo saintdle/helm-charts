@@ -1,0 +1,17 @@
+apiVersion: v1
+entries:
+  pacman:
+  - apiVersion: v2
+    appVersion: 0.5.3
+    created: "2021-11-12T15:35:09.245588Z"
+    description: Pac-Man for Kubernetes
+    digest: d873c520375edf8e418fff5ed854e281e3a070a26caf0521a731bfffcd3b9fab
+    home: https://github.com/saintdle/pacman-tanzy
+    icon: https://veducate.co.uk/
+    maintainers:
+    - name: Dean Lewis
+    name: pacman
+    urls:
+    - https://saintdle.github.io/helm-chart/pacman-0.5.3.tgz
+    version: 0.5.3
+generated: "2021-11-12T15:35:09.219226Z"
