@@ -6,7 +6,7 @@ entries:
     created: "2021-11-12T15:35:09.245588Z"
     description: Pac-Man for Kubernetes
     digest: d873c520375edf8e418fff5ed854e281e3a070a26caf0521a731bfffcd3b9fab
-    home: https://github.com/saintdle/pacman-tanzy
+    home: https://github.com/saintdle/pacman-tanzu
     icon: https://veducate.co.uk/
     maintainers:
     - name: Dean Lewis
