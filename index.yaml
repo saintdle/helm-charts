@@ -1,0 +1,73 @@
+apiVersion: v1
+entries:
+  k10:
+  - apiVersion: v2
+    appVersion: 4.5.1
+    created: "2021-12-14T17:20:21.84193Z"
+    description: Kasten’s K10 Data Management Platform
+    digest: afb86b3cde8639306749e35066508bd98d5e5876dd30b87692057a7dbdeab9e7
+    home: https://kasten.io/
+    icon: https://docs.kasten.io/_static/kasten.png
+    maintainers:
+    - email: support@kasten.io
+      name: kastenIO
+    name: k10
+    urls:
+    - https://saintdle.github.io/helm-chart/k10-4.5.1.tgz
+    version: 4.5.1
+  - apiVersion: v2
+    appVersion: 4.5.1
+    created: "2021-12-14T17:20:21.860297Z"
+    description: Kasten’s K10 Data Management Platform
+    digest: afb86b3cde8639306749e35066508bd98d5e5876dd30b87692057a7dbdeab9e7
+    home: https://kasten.io/
+    icon: https://docs.kasten.io/_static/kasten.png
+    maintainers:
+    - email: support@kasten.io
+      name: kastenIO
+    name: k10
+    urls:
+    - https://saintdle.github.io/helm-chart/kasten-offline/k10-4.5.1.tgz
+    version: 4.5.1
+  - apiVersion: v2
+    appVersion: 4.5.0
+    created: "2021-12-14T17:20:21.830607Z"
+    description: Kasten’s K10 Data Management Platform
+    digest: 53ddd1b906805a75b50a0fc083b504e04260921e387b3876471666b90c26f224
+    home: https://kasten.io/
+    icon: https://docs.kasten.io/_static/kasten.png
+    maintainers:
+    - email: support@kasten.io
+      name: kastenIO
+    name: k10
+    urls:
+    - https://saintdle.github.io/helm-chart/k10-4.5.0.tgz
+    version: 4.5.0
+  pacman:
+  - apiVersion: v2
+    appVersion: 0.5.3
+    created: "2021-12-14T17:20:21.846468Z"
+    description: Pac-Man for Kubernetes
+    digest: d873c520375edf8e418fff5ed854e281e3a070a26caf0521a731bfffcd3b9fab
+    home: https://github.com/saintdle/pacman-tanzy
+    icon: https://veducate.co.uk/
+    maintainers:
+    - name: Dean Lewis
+    name: pacman
+    urls:
+    - https://saintdle.github.io/helm-chart/pacman-0.5.3.tgz
+    version: 0.5.3
+  - apiVersion: v2
+    appVersion: 0.5.3.1
+    created: "2021-12-14T17:20:21.844265Z"
+    description: Pac-Man for Kubernetes
+    digest: 9d236565b8eeb28bfd95f5ee94fba513a70f0f96b8cd23daf0644a8fbc019b13
+    home: https://github.com/saintdle/pacman-tanzu
+    icon: https://veducate.co.uk
+    maintainers:
+    - name: Dean Lewis
+    name: pacman
+    urls:
+    - https://saintdle.github.io/helm-chart/pacman-0.1.tgz
+    version: "0.1"
+generated: "2021-12-14T17:20:21.811319Z"
