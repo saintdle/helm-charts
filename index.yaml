@@ -1,10 +1,9 @@
 apiVersion: v1
 entries:
   pacman:
-    version: 0.5.3
   - apiVersion: v2
     appVersion: 0.5.3.1
-    created: "2021-12-14T17:57:58.506623Z"
+    created: "2021-12-14T18:00:05.163371Z"
     description: Pac-Man for Kubernetes
     digest: da237c835ccec5936a2633d7961cc9764b22de231b0a94e9670b7c267e2cd7a8
     home: https://github.com/saintdle/pacman-tanzu
@@ -13,6 +12,6 @@ entries:
     - name: Dean Lewis
     name: pacman
     urls:
-    - https://saintdle.github.io/helm-chart/pacman-0.1.0.tgz
+    - https://saintdle.github.io/helm-charts/pacman-0.1.0.tgz
     version: 0.1.0
-generated: "2021-12-14T17:57:58.469374Z"
+generated: "2021-12-14T18:00:05.136054Z"
