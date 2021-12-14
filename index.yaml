@@ -12,5 +12,5 @@ entries:
     name: pacman
     urls:
     - https://saintdle.github.io/helm-chart/pacman-0.1.tgz
-    version: "0.1"
+    version: 0.1
 generated: "2021-12-14T17:20:21.811319Z"
