@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pacman.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pacman.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "pacman.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: web
+  template:
+    metadata:
+      labels:
+        {{- include "pacman.labels" . | nindent 8 }}
+        app.kubernetes.io/component: web
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "pacman.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: pacman
+          image: {{ include "pacman.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: MY_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            {{- if eq .Values.database "mongo" }}
+            - name: DB_TYPE
+              value: mongo
+            - name: MONGO_SERVICE_HOST
+              value: {{ include "pacman.mongo.fullname" . }}
+            - name: MY_MONGO_PORT
+              value: "{{ .Values.mongo.service.port }}"
+            - name: MONGO_USE_SSL
+              value: "false"
+            - name: MONGO_VALIDATE_SSL
+              value: "false"
+            - name: MONGO_AUTH_USER
+              valueFrom: { secretKeyRef: { name: {{ include "pacman.mongo.secretName" . }}, key: database-user } }
+            - name: MONGO_AUTH_PWD
+              valueFrom: { secretKeyRef: { name: {{ include "pacman.mongo.secretName" . }}, key: database-password } }
+            - name: MONGO_DATABASE
+              valueFrom: { secretKeyRef: { name: {{ include "pacman.mongo.secretName" . }}, key: database-name } }
+            {{- else if eq .Values.database "postgres" }}
+            - name: DB_TYPE
+              value: postgres
+            - name: POSTGRES_HOST
+              value: {{ include "pacman.postgres.fullname" . }}
+            - name: POSTGRES_PORT
+              value: "{{ .Values.postgres.service.port }}"
+            - name: POSTGRES_DB
+              valueFrom: { secretKeyRef: { name: {{ include "pacman.postgres.secretName" . }}, key: database } }
+            - name: POSTGRES_USER
+              valueFrom: { secretKeyRef: { name: {{ include "pacman.postgres.secretName" . }}, key: username } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "pacman.postgres.secretName" . }}, key: password } }
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}

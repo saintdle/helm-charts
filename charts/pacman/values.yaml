@@ -1,0 +1,152 @@
+# -- Default values for the pacman chart.
+
+# -- Backend database engine. One of: mongo, postgres.
+database: mongo
+
+image:
+  # Pinned by digest for reproducibility. Override `tag` to skip the digest.
+  repository: docker.io/saintdle/pacman
+  digest: "sha256:d1c36678cd8cb7c4a0ea7c80f8161ec39c899da20c4328d0dc4ff21ada762198"
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# -- Override the fully-qualified release name.
+fullnameOverride: ""
+nameOverride: ""
+
+replicaCount: 1
+
+# -- Extra environment variables on the pacman container.
+extraEnv: []
+  # - name: SOMETHING
+  #   value: someValue
+
+service:
+  type: LoadBalancer
+  port: 80
+  # nodePort: 30080      # only used when type=NodePort
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: pacman.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 100
+  runAsGroup: 101
+  fsGroup: 101
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# -- ServiceAccount used by the pacman Deployment. Granted cluster-scoped
+# get/watch/list on pods and nodes (used by the in-app location probe).
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+rbac:
+  # -- Create the ClusterRole and ClusterRoleBinding for the location probe.
+  create: true
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# -- HorizontalPodAutoscaler for pacman.
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+# -------- MongoDB (when database=mongo) --------
+mongo:
+  image:
+    repository: mongo
+    tag: "8"
+    pullPolicy: IfNotPresent
+  # -- Provide non-empty values (or use existingSecret) before installing.
+  auth:
+    rootUsername: "clyde"
+    rootPassword: "clyde"
+    databaseName: "pacman"
+    databaseUser: "blinky"
+    databasePassword: "pinky"
+  # -- Reference an existing Secret holding the same keys instead of values.
+  # Expected keys: database-admin-name, database-admin-password,
+  # database-name, database-user, database-password.
+  existingSecret: ""
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  service:
+    port: 27017
+
+# -------- PostgreSQL (when database=postgres) --------
+postgres:
+  image:
+    repository: postgres
+    tag: "17-alpine"
+    pullPolicy: IfNotPresent
+  auth:
+    username: "pacman"
+    password: "pinky"
+    database: "pacman"
+  existingSecret: ""
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+  service:
+    port: 5432
+  # -- Run the schema migration `Job` shipped with the pacman image
+  # (`node scripts/postgres-migrate.js`) on install/upgrade.
+  migration:
+    enabled: true
+    backoffLimit: 6
