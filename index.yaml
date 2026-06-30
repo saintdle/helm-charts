@@ -5,7 +5,35 @@ entries:
       category: Demo
     apiVersion: v2
     appVersion: 0.6.0
-    created: "2026-05-27T16:50:42.934375+01:00"
+    created: "2026-06-30T16:32:28.196156+01:00"
+    description: 'Pac-Man (Node.js + Express) on Kubernetes with a MongoDB or PostgreSQL
+      backend. Hardened to Pod Security Standards "restricted", health/readiness probes,
+      optional ingress, and ClusterRole bindings for the in-app pod/node location
+      probe. '
+    digest: 3c48192211fb182637bce509a548762b2502eeaf5cd37b6b84464e534a88ac79
+    home: https://github.com/saintdle/pacman
+    icon: https://veducate.co.uk/wp-content/uploads/2021/09/Pac-Man-UI.jpg
+    keywords:
+    - pacman
+    - game
+    - demo
+    - cilium
+    maintainers:
+    - name: Dean Lewis
+      url: https://veducate.co.uk
+    name: pacman
+    sources:
+    - https://github.com/saintdle/pacman
+    - https://github.com/saintdle/pacman-for-k8s
+    type: application
+    urls:
+    - https://saintdle.github.io/helm-charts/pacman-0.6.1.tgz
+    version: 0.6.1
+  - annotations:
+      category: Demo
+    apiVersion: v2
+    appVersion: 0.6.0
+    created: "2026-06-30T16:32:28.195623+01:00"
     description: 'Pac-Man (Node.js + Express) on Kubernetes with a MongoDB or PostgreSQL
       backend. Hardened to Pod Security Standards "restricted", health/readiness probes,
       optional ingress, and ClusterRole bindings for the in-app pod/node location
@@ -31,7 +59,7 @@ entries:
     version: 0.6.0
   - apiVersion: v2
     appVersion: 0.5.3.1
-    created: "2026-05-27T16:50:42.933976+01:00"
+    created: "2026-06-30T16:32:28.194824+01:00"
     description: Pac-Man for Kubernetes
     digest: da237c835ccec5936a2633d7961cc9764b22de231b0a94e9670b7c267e2cd7a8
     home: https://github.com/saintdle/pacman-tanzu
@@ -42,4 +70,4 @@ entries:
     urls:
     - https://saintdle.github.io/helm-charts/pacman-0.1.0.tgz
     version: 0.1.0
-generated: "2026-05-27T16:50:42.932765+01:00"
+generated: "2026-06-30T16:32:28.19331+01:00"
