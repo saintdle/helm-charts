@@ -119,16 +119,12 @@ spec:
               mountPath: /data/db
             - name: init
               mountPath: /docker-entrypoint-initdb.d
-          livenessProbe:
-            exec:
-              command: ["/bin/sh", "-c", "mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok'"]
-            initialDelaySeconds: 30
-            periodSeconds: 30
-          readinessProbe:
-            exec:
-              command: ["/bin/sh", "-c", "mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok'"]
-            initialDelaySeconds: 5
-            periodSeconds: 10
+          {{- with .Values.mongo.livenessProbe }}
+          livenessProbe: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.mongo.readinessProbe }}
+          readinessProbe: {{- toYaml . | nindent 12 }}
+          {{- end }}
           resources: {{- toYaml .Values.mongo.resources | nindent 12 }}
       volumes:
         - name: data

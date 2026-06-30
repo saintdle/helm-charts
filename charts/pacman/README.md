@@ -46,6 +46,7 @@ against the postgres `Service` and applies any pending migrations.
 | `mongo.auth.*`                     | Mongo credentials (root + app user)               | demo values              |
 | `mongo.persistence.size`           | Mongo PVC size                                    | `1Gi`                    |
 | `mongo.existingSecret`             | Use a pre-created Secret instead                  | `""`                     |
+| `mongo.livenessProbe` / `mongo.readinessProbe` | Mongo health probes; `mongosh` needs a generous `timeoutSeconds` | `10s` timeout |
 | `postgres.auth.*`                  | Postgres credentials                              | demo values              |
 | `postgres.migration.enabled`       | Run `node src/db/migrate.js` as Helm hook         | `true`                   |
 
