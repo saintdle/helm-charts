@@ -118,6 +118,26 @@ mongo:
       memory: 1Gi
   service:
     port: 27017
+  # -- Liveness probe for the MongoDB container. mongosh is a Node.js shell and
+  # can take several seconds to start under CPU contention, so timeoutSeconds
+  # must be generous or the kubelet kills a healthy mongod (which then drops the
+  # Service's only endpoint). Set to {} to disable.
+  livenessProbe:
+    exec:
+      command: ["/bin/sh", "-c", "mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok'"]
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 6
+  # -- Readiness probe for the MongoDB container. The same mongosh startup
+  # caveat as the liveness probe applies. Set to {} to disable.
+  readinessProbe:
+    exec:
+      command: ["/bin/sh", "-c", "mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok'"]
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 10
+    failureThreshold: 6
 
 # -------- PostgreSQL (when database=postgres) --------
 postgres:
