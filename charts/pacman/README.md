@@ -100,9 +100,9 @@ Secret. Expected keys:
   `database-user`, `database-password`
 - Postgres: `username`, `password`, `database`
 
-## Upgrading to 6.1.2
+## Upgrading to 0.6.2
 
-6.1.2 gives each workload a distinct `app.kubernetes.io/name` (previously every
+0.6.2 gives each workload a distinct `app.kubernetes.io/name` (previously every
 pod shared `pacman`). A Deployment's label selector is immutable, so an
 in-place `helm upgrade` from an earlier version is rejected by the API server.
 Uninstall and reinstall instead:
