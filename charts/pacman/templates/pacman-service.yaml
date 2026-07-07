@@ -4,8 +4,7 @@ metadata:
   name: {{ include "pacman.fullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "pacman.labels" . | nindent 4 }}
-    app.kubernetes.io/component: web
+    {{- include "pacman.frontend.labels" $ | nindent 4 }}
   {{- with .Values.service.annotations }}
   annotations: {{- toYaml . | nindent 4 }}
   {{- end }}
@@ -20,5 +19,4 @@ spec:
       nodePort: {{ .Values.service.nodePort }}
       {{- end }}
   selector:
-    {{- include "pacman.selectorLabels" . | nindent 4 }}
-    app.kubernetes.io/component: web
+    {{- include "pacman.frontend.selectorLabels" $ | nindent 4 }}

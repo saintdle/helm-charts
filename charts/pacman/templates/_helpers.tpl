@@ -23,19 +23,76 @@ Common helpers
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
-{{- define "pacman.labels" -}}
+{{/*
+Common labels shared by every rendered object, independent of which
+workload/component they belong to. Call with the root context.
+*/}}
+{{- define "pacman.commonLabels" -}}
 helm.sh/chart: {{ include "pacman.chart" . }}
-{{ include "pacman.selectorLabels" . }}
+app.kubernetes.io/part-of: pacman
+app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
-app.kubernetes.io/part-of: pacman
 {{- end -}}
 
+{{/*
+Full label set for a single workload/component.
+
+Each workload is given a distinct identity so observability tools such as
+Hubble render them as separate services instead of collapsing every pod
+under the chart name. Call with a dict:
+
+  (dict "root" $ "name" "mongodb" "role" "database")
+
+  - name: value for app.kubernetes.io/name and the app label.
+  - role: value for app.kubernetes.io/component and the role label.
+*/}}
+{{- define "pacman.labels" -}}
+{{ include "pacman.commonLabels" .root }}
+{{ include "pacman.selectorLabels" . }}
+app: {{ .name }}
+role: {{ .role }}
+{{- end -}}
+
+{{/*
+Immutable selector labels for a single workload/component. Limited to the
+stable identity keys (name, instance, component).
+*/}}
 {{- define "pacman.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "pacman.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/name: {{ .name }}
+app.kubernetes.io/instance: {{ .root.Release.Name }}
+app.kubernetes.io/component: {{ .role }}
+{{- end -}}
+
+{{/*
+Per-workload label helpers. These centralise the app name and role for each
+component so the identity is defined in exactly one place. Call with the
+root context, e.g. {{ include "pacman.frontend.labels" $ }}.
+*/}}
+{{- define "pacman.frontend.labels" -}}
+{{ include "pacman.labels" (dict "root" . "name" "pacman-frontend" "role" "frontend") }}
+{{- end -}}
+{{- define "pacman.frontend.selectorLabels" -}}
+{{ include "pacman.selectorLabels" (dict "root" . "name" "pacman-frontend" "role" "frontend") }}
+{{- end -}}
+
+{{- define "pacman.mongo.labels" -}}
+{{ include "pacman.labels" (dict "root" . "name" "mongodb" "role" "database") }}
+{{- end -}}
+{{- define "pacman.mongo.selectorLabels" -}}
+{{ include "pacman.selectorLabels" (dict "root" . "name" "mongodb" "role" "database") }}
+{{- end -}}
+
+{{- define "pacman.postgres.labels" -}}
+{{ include "pacman.labels" (dict "root" . "name" "postgres" "role" "database") }}
+{{- end -}}
+{{- define "pacman.postgres.selectorLabels" -}}
+{{ include "pacman.selectorLabels" (dict "root" . "name" "postgres" "role" "database") }}
+{{- end -}}
+
+{{- define "pacman.migrate.labels" -}}
+{{ include "pacman.labels" (dict "root" . "name" "pacman-migrate" "role" "migrate") }}
 {{- end -}}
 
 {{- define "pacman.serviceAccountName" -}}

@@ -7,8 +7,7 @@ metadata:
   name: {{ include "pacman.postgres.fullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "pacman.labels" . | nindent 4 }}
-    app.kubernetes.io/component: database
+    {{- include "pacman.postgres.labels" $ | nindent 4 }}
 spec:
   accessModes:
 {{ toYaml .Values.postgres.persistence.accessModes | indent 4 }}
@@ -26,8 +25,7 @@ metadata:
   name: {{ include "pacman.postgres.fullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "pacman.labels" . | nindent 4 }}
-    app.kubernetes.io/component: database
+    {{- include "pacman.postgres.labels" $ | nindent 4 }}
 spec:
   type: ClusterIP
   ports:
@@ -35,8 +33,7 @@ spec:
       targetPort: pg
       name: pg
   selector:
-    {{- include "pacman.selectorLabels" . | nindent 4 }}
-    app.kubernetes.io/component: database
+    {{- include "pacman.postgres.selectorLabels" $ | nindent 4 }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -44,21 +41,18 @@ metadata:
   name: {{ include "pacman.postgres.fullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "pacman.labels" . | nindent 4 }}
-    app.kubernetes.io/component: database
+    {{- include "pacman.postgres.labels" $ | nindent 4 }}
 spec:
   replicas: 1
   strategy:
     type: Recreate
   selector:
     matchLabels:
-      {{- include "pacman.selectorLabels" . | nindent 6 }}
-      app.kubernetes.io/component: database
+      {{- include "pacman.postgres.selectorLabels" $ | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "pacman.labels" . | nindent 8 }}
-        app.kubernetes.io/component: database
+        {{- include "pacman.postgres.labels" $ | nindent 8 }}
     spec:
       restartPolicy: Always
       securityContext:
@@ -121,16 +115,14 @@ metadata:
   name: {{ include "pacman.postgres.fullname" . }}-migrate
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "pacman.labels" . | nindent 4 }}
-    app.kubernetes.io/component: migrate
+    {{- include "pacman.migrate.labels" $ | nindent 4 }}
 spec:
   backoffLimit: {{ .Values.postgres.migration.backoffLimit }}
   ttlSecondsAfterFinished: 600
   template:
     metadata:
       labels:
-        {{- include "pacman.labels" . | nindent 8 }}
-        app.kubernetes.io/component: migrate
+        {{- include "pacman.migrate.labels" $ | nindent 8 }}
     spec:
       restartPolicy: OnFailure
       securityContext:

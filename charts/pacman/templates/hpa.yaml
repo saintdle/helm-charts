@@ -4,7 +4,7 @@ kind: HorizontalPodAutoscaler
 metadata:
   name: {{ include "pacman.fullname" . }}
   namespace: {{ .Release.Namespace }}
-  labels: {{- include "pacman.labels" . | nindent 4 }}
+  labels: {{- include "pacman.frontend.labels" $ | nindent 4 }}
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
