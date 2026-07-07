@@ -52,6 +52,25 @@ against the postgres `Service` and applies any pending migrations.
 
 The complete list is in [`values.yaml`](values.yaml).
 
+## Workload labels
+
+Every workload is given a distinct identity so observability tools such as
+Hubble render them as separate services instead of collapsing every pod under
+the chart name. Alongside the standard `app.kubernetes.io/*` labels, each object
+carries a short `app` and `role` pair:
+
+| Workload           | `app`             | `role`     |
+|--------------------|-------------------|------------|
+| Pac-Man            | `pacman-frontend` | `frontend` |
+| MongoDB            | `mongodb`         | `database` |
+| PostgreSQL         | `postgres`        | `database` |
+| Postgres migration | `pacman-migrate`  | `migrate`  |
+
+`app.kubernetes.io/name` matches the `app` value, `app.kubernetes.io/component`
+matches the `role` value, and every object shares
+`app.kubernetes.io/part-of: pacman` so the whole release can still be selected
+together.
+
 ## Pod Security Standards `restricted`
 
 Every workload in this chart sets:
@@ -80,6 +99,21 @@ Secret. Expected keys:
 - Mongo: `database-admin-name`, `database-admin-password`, `database-name`,
   `database-user`, `database-password`
 - Postgres: `username`, `password`, `database`
+
+## Upgrading to 6.1.2
+
+6.1.2 gives each workload a distinct `app.kubernetes.io/name` (previously every
+pod shared `pacman`). A Deployment's label selector is immutable, so an
+in-place `helm upgrade` from an earlier version is rejected by the API server.
+Uninstall and reinstall instead:
+
+```bash
+helm uninstall pacman --namespace pacman-demo
+helm install pacman veducate/pacman --namespace pacman-demo
+```
+
+The Mongo and Postgres PVCs are retained across an uninstall, so high scores
+survive the reinstall.
 
 ## Uninstall
 

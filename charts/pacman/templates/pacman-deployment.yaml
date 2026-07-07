@@ -4,21 +4,18 @@ metadata:
   name: {{ include "pacman.fullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "pacman.labels" . | nindent 4 }}
-    app.kubernetes.io/component: web
+    {{- include "pacman.frontend.labels" $ | nindent 4 }}
 spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
   selector:
     matchLabels:
-      {{- include "pacman.selectorLabels" . | nindent 6 }}
-      app.kubernetes.io/component: web
+      {{- include "pacman.frontend.selectorLabels" $ | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "pacman.labels" . | nindent 8 }}
-        app.kubernetes.io/component: web
+        {{- include "pacman.frontend.labels" $ | nindent 8 }}
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

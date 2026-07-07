@@ -5,7 +5,7 @@ kind: ConfigMap
 metadata:
   name: {{ include "pacman.mongo.fullname" . }}-init
   namespace: {{ .Release.Namespace }}
-  labels: {{- include "pacman.labels" . | nindent 4 }}
+  labels: {{- include "pacman.mongo.labels" $ | nindent 4 }}
 data:
   init-user.sh: |
     #!/bin/bash
@@ -28,8 +28,7 @@ metadata:
   name: {{ include "pacman.mongo.fullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "pacman.labels" . | nindent 4 }}
-    app.kubernetes.io/component: database
+    {{- include "pacman.mongo.labels" $ | nindent 4 }}
 spec:
   accessModes:
 {{ toYaml .Values.mongo.persistence.accessModes | indent 4 }}
@@ -47,8 +46,7 @@ metadata:
   name: {{ include "pacman.mongo.fullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "pacman.labels" . | nindent 4 }}
-    app.kubernetes.io/component: database
+    {{- include "pacman.mongo.labels" $ | nindent 4 }}
 spec:
   type: ClusterIP
   ports:
@@ -56,8 +54,7 @@ spec:
       targetPort: mongo
       name: mongo
   selector:
-    {{- include "pacman.selectorLabels" . | nindent 4 }}
-    app.kubernetes.io/component: database
+    {{- include "pacman.mongo.selectorLabels" $ | nindent 4 }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -65,21 +62,18 @@ metadata:
   name: {{ include "pacman.mongo.fullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "pacman.labels" . | nindent 4 }}
-    app.kubernetes.io/component: database
+    {{- include "pacman.mongo.labels" $ | nindent 4 }}
 spec:
   replicas: 1
   strategy:
     type: Recreate
   selector:
     matchLabels:
-      {{- include "pacman.selectorLabels" . | nindent 6 }}
-      app.kubernetes.io/component: database
+      {{- include "pacman.mongo.selectorLabels" $ | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "pacman.labels" . | nindent 8 }}
-        app.kubernetes.io/component: database
+        {{- include "pacman.mongo.labels" $ | nindent 8 }}
     spec:
       restartPolicy: Always
       securityContext:
