@@ -1,9 +1,11 @@
 name: Chart CI
 
-# Runs on every PR that touches a chart. Two required checks gate the merge:
+# Runs on every pull request so the two required checks always report a status
+# (a required check that never runs would block the PR forever). Both checks are
+# no-ops when the chart is untouched:
 #   * version-gate — fails unless charts/pacman/Chart.yaml `version` is bumped
-#     to a new, unreleased value. This is the "new version must be declared"
-#     flag that must be green before the PR can merge.
+#     to a new, unreleased value when the chart changes. This is the "new version
+#     must be declared" flag that must be green before the PR can merge.
 #   * manifests    — lints the chart and renders the manifests for both database
 #     backends, posts a preview (diff vs. the base branch) as a sticky PR
 #     comment, and uploads the full rendered manifests as an artifact so they
@@ -11,9 +13,6 @@ name: Chart CI
 
 on:
   pull_request:
-    paths:
-      - "charts/**"
-      - ".github/workflows/chart-ci.yml"
 
 permissions:
   contents: read
@@ -106,11 +105,25 @@ jobs:
         with:
           version: ${{ env.HELM_VERSION }}
 
+      - name: Detect chart change
+        id: detect
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          if git diff --quiet FETCH_HEAD -- "$CHART_DIR"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Chart unchanged; manifest preview skipped."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Lint chart
+        if: steps.detect.outputs.changed == 'true'
         run: helm lint "$CHART_DIR"
 
       - name: Render manifests and build preview
         id: render
+        if: steps.detect.outputs.changed == 'true'
         run: |
           set -euo pipefail
           mkdir -p rendered
@@ -178,7 +191,7 @@ jobs:
           git worktree remove --force .base 2>/dev/null || true
 
       - name: Upload rendered manifests
-        if: always()
+        if: always() && steps.detect.outputs.changed == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: rendered-manifests
@@ -186,7 +199,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Post preview comment
-        if: always()
+        if: always() && steps.detect.outputs.changed == 'true'
         uses: actions/github-script@v7
         with:
           script: |
