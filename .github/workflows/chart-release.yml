@@ -1,0 +1,124 @@
+name: Release chart
+
+# Runs when a chart change lands on main (i.e. a PR is merged). It performs the
+# publish steps automatically:
+#   1. Package the chart.
+#   2. Create a GitHub release + tag (pacman-<version>) with the .tgz attached.
+#   3. Publish the .tgz and a refreshed index.yaml to the gh-pages branch, which
+#      GitHub Pages serves as the Helm repository.
+# The job is idempotent: if a release for the current Chart.yaml version already
+# exists it does nothing, so re-runs and unrelated pushes are safe.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "charts/**"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chart-release
+  cancel-in-progress: false
+
+env:
+  CHART_DIR: charts/pacman
+  HELM_VERSION: v3.16.4
+  PAGES_URL: https://saintdle.github.io/helm-charts
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Read chart metadata
+        id: chart
+        run: |
+          set -euo pipefail
+          name=$(yq '.name' "$CHART_DIR/Chart.yaml")
+          version=$(yq '.version' "$CHART_DIR/Chart.yaml")
+          {
+            echo "name=$name"
+            echo "version=$version"
+            echo "tag=${name}-${version}"
+            echo "tgz=${name}-${version}.tgz"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Skip if already released
+        id: guard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.chart.outputs.tag }}"
+          if gh release view "$tag" >/dev/null 2>&1 \
+            || git ls-remote --tags origin "refs/tags/$tag" | grep -q .; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "Release $tag already exists; nothing to publish."
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Package chart
+        if: steps.guard.outputs.already == 'false'
+        run: |
+          set -euo pipefail
+          mkdir -p .cr-release-packages
+          helm package "$CHART_DIR" -d .cr-release-packages
+
+      - name: Create GitHub release
+        if: steps.guard.outputs.already == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.chart.outputs.tag }}"
+          version="${{ steps.chart.outputs.version }}"
+          tgz=".cr-release-packages/${{ steps.chart.outputs.tgz }}"
+          notes=$(mktemp)
+          {
+            echo "Pacman Helm chart **${version}**."
+            echo ""
+            echo "### Install"
+            echo '```sh'
+            echo "helm repo add saintdle ${PAGES_URL}"
+            echo "helm repo update"
+            echo "helm install pacman saintdle/pacman --version ${version}"
+            echo '```'
+          } > "$notes"
+          gh release create "$tag" "$tgz" \
+            --title "pacman ${version}" \
+            --notes-file "$notes"
+
+      - name: Publish to gh-pages
+        if: steps.guard.outputs.already == 'false'
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: .gh-pages
+
+      - name: Update Helm repository index
+        if: steps.guard.outputs.already == 'false'
+        run: |
+          set -euo pipefail
+          version="${{ steps.chart.outputs.version }}"
+          tgz="${{ steps.chart.outputs.tgz }}"
+          cp ".cr-release-packages/${tgz}" ".gh-pages/${tgz}"
+          helm repo index .gh-pages --url "$PAGES_URL" --merge .gh-pages/index.yaml
+          cd .gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${tgz}" index.yaml
+          git commit -m "Publish pacman ${version} [skip ci]"
+          git push origin gh-pages
