@@ -1,0 +1,209 @@
+name: Chart CI
+
+# Runs on every PR that touches a chart. Two required checks gate the merge:
+#   * version-gate — fails unless charts/pacman/Chart.yaml `version` is bumped
+#     to a new, unreleased value. This is the "new version must be declared"
+#     flag that must be green before the PR can merge.
+#   * manifests    — lints the chart and renders the manifests for both database
+#     backends, posts a preview (diff vs. the base branch) as a sticky PR
+#     comment, and uploads the full rendered manifests as an artifact so they
+#     can be reviewed or applied before the PR merges.
+
+on:
+  pull_request:
+    paths:
+      - "charts/**"
+      - ".github/workflows/chart-ci.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  CHART_DIR: charts/pacman
+  HELM_VERSION: v3.16.4
+  PAGES_URL: https://saintdle.github.io/helm-charts
+
+concurrency:
+  group: chart-ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  version-gate:
+    name: version-gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require a new chart version
+        run: |
+          set -euo pipefail
+          name=$(yq '.name' "$CHART_DIR/Chart.yaml")
+          pr_version=$(yq '.version' "$CHART_DIR/Chart.yaml")
+
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+
+          # Only require a version bump when the chart itself changed. A PR that
+          # only touches workflows or docs does not need a new chart version.
+          if git diff --quiet FETCH_HEAD -- "$CHART_DIR"; then
+            echo "No changes under $CHART_DIR in this PR; version bump not required."
+            echo "### Version gate skipped (chart unchanged)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if git cat-file -e "FETCH_HEAD:$CHART_DIR/Chart.yaml" 2>/dev/null; then
+            base_version=$(git show "FETCH_HEAD:$CHART_DIR/Chart.yaml" | yq '.version')
+          else
+            base_version="(new chart)"
+          fi
+
+          echo "Chart:         $name"
+          echo "Base version:  $base_version"
+          echo "PR version:    $pr_version"
+
+          fail() { echo "::error file=$CHART_DIR/Chart.yaml::$1"; exit 1; }
+
+          if [ "$pr_version" = "null" ] || [ -z "$pr_version" ]; then
+            fail "Chart.yaml has no version field."
+          fi
+
+          if [ "$base_version" != "(new chart)" ]; then
+            if [ "$pr_version" = "$base_version" ]; then
+              fail "Chart.yaml version is still $pr_version. Bump it to a new version before this PR can merge."
+            fi
+            greatest=$(printf '%s\n%s\n' "$base_version" "$pr_version" | sort -V | tail -1)
+            if [ "$greatest" != "$pr_version" ]; then
+              fail "PR version $pr_version must be greater than the base version $base_version."
+            fi
+          fi
+
+          if git ls-remote --tags origin "refs/tags/${name}-${pr_version}" | grep -q .; then
+            fail "${name}-${pr_version} is already released (a tag exists). Pick a new version."
+          fi
+
+          {
+            echo "### Version gate passed"
+            echo ""
+            echo "| Chart | Base | This PR |"
+            echo "|-------|------|---------|"
+            echo "| \`$name\` | \`$base_version\` | \`$pr_version\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  manifests:
+    name: manifests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Lint chart
+        run: helm lint "$CHART_DIR"
+
+      - name: Render manifests and build preview
+        id: render
+        run: |
+          set -euo pipefail
+          mkdir -p rendered
+          name=$(yq '.name' "$CHART_DIR/Chart.yaml")
+          pr_version=$(yq '.version' "$CHART_DIR/Chart.yaml")
+          backends="mongo postgres"
+
+          # Render this PR's chart for each backend.
+          for db in $backends; do
+            helm template "$name" "$CHART_DIR" --namespace pacman-demo \
+              --set database="$db" > "rendered/${db}.yaml"
+          done
+
+          # Render the base branch's chart (if present) for a diff.
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          have_base=false
+          if git cat-file -e "FETCH_HEAD:$CHART_DIR/Chart.yaml" 2>/dev/null; then
+            git worktree add --detach .base FETCH_HEAD >/dev/null 2>&1 || true
+            if [ -d ".base/$CHART_DIR" ]; then
+              have_base=true
+              for db in $backends; do
+                helm template "$name" ".base/$CHART_DIR" --namespace pacman-demo \
+                  --set database="$db" > "rendered/base-${db}.yaml" 2>/dev/null || : > "rendered/base-${db}.yaml"
+              done
+            fi
+          fi
+
+          {
+            echo "<!-- chart-manifest-preview -->"
+            echo "## Rendered manifest preview"
+            echo ""
+            echo "Chart \`$name\` version \`$pr_version\`. Full manifests for both"
+            echo "backends are attached as the **rendered-manifests** artifact on this run."
+            echo ""
+            for db in $backends; do
+              echo "<details><summary>Backend <code>${db}</code></summary>"
+              echo ""
+              if [ "$have_base" = true ]; then
+                if diff -u "rendered/base-${db}.yaml" "rendered/${db}.yaml" > "rendered/diff-${db}.patch"; then
+                  echo "_No change to rendered manifests versus the base branch._"
+                else
+                  echo "Diff versus base branch:"
+                  echo ""
+                  echo '```diff'
+                  head -c 25000 "rendered/diff-${db}.patch"
+                  echo ""
+                  echo '```'
+                fi
+              else
+                echo "New chart. Rendered output (truncated, see artifact for full):"
+                echo ""
+                echo '```yaml'
+                head -c 25000 "rendered/${db}.yaml"
+                echo ""
+                echo '```'
+              fi
+              echo ""
+              echo "</details>"
+              echo ""
+            done
+          } > rendered/comment.md
+
+          # Clean up worktree and base renders so they are not in the artifact.
+          rm -f rendered/base-*.yaml rendered/diff-*.patch
+          git worktree remove --force .base 2>/dev/null || true
+
+      - name: Upload rendered manifests
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rendered-manifests
+          path: rendered/
+          if-no-files-found: warn
+
+      - name: Post preview comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body;
+            try {
+              body = fs.readFileSync('rendered/comment.md', 'utf8');
+            } catch (e) {
+              body = '<!-- chart-manifest-preview -->\n## Rendered manifest preview\n\nManifest rendering failed. Check the workflow logs.';
+            }
+            const marker = '<!-- chart-manifest-preview -->';
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
