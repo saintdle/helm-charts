@@ -77,12 +77,7 @@ spec:
     spec:
       restartPolicy: Always
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 999
-        runAsGroup: 999
-        fsGroup: 999
-        seccompProfile:
-          type: RuntimeDefault
+        {{- include "pacman.podSecurityContext" (dict "root" $ "ctx" .Values.mongo.podSecurityContext) | nindent 8 }}
       terminationGracePeriodSeconds: 30
       containers:
         - name: mongo

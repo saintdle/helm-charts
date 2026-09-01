@@ -6,7 +6,7 @@ database: mongo
 image:
   # Pinned by digest for reproducibility. Override `tag` to skip the digest.
   repository: docker.io/saintdle/pacman
-  digest: "sha256:d1c36678cd8cb7c4a0ea7c80f8161ec39c899da20c4328d0dc4ff21ada762198"
+  digest: "sha256:48f22e19e88b7f22f55e766908cda6b613b8980c0f9464204591f36d7c606426"
   tag: ""
   pullPolicy: IfNotPresent
 imagePullSecrets: []
@@ -47,6 +47,21 @@ resources:
     cpu: 500m
     memory: 256Mi
 
+# -- OpenShift integration. The restricted-v2 SCC assigns a random UID from the
+# namespace's range, so on OpenShift the chart drops the fixed
+# runAsUser/runAsGroup/fsGroup from every pod securityContext and lets the
+# platform inject them.
+openShift:
+  # -- true, false, or "auto" (detect the security.openshift.io/v1 API).
+  enabled: auto
+  sccRoleBinding:
+    # -- Keep the fixed UIDs instead and bind each workload's ServiceAccount to
+    # the nonroot-v2 SCC. Requires permission to create RoleBindings to
+    # system:openshift:scc:* ClusterRoles.
+    create: false
+
+# -- Pod securityContext for the Pac-Man frontend. runAsUser/runAsGroup/fsGroup
+# are dropped automatically on OpenShift (see openShift above).
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 100
@@ -92,6 +107,15 @@ mongo:
     repository: mongo
     tag: "8"
     pullPolicy: IfNotPresent
+  # -- Pod securityContext for MongoDB. runAsUser/runAsGroup/fsGroup are dropped
+  # automatically on OpenShift (see openShift above).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+    seccompProfile:
+      type: RuntimeDefault
   # -- Provide non-empty values (or use existingSecret) before installing.
   auth:
     rootUsername: "clyde"
@@ -145,6 +169,15 @@ postgres:
     repository: postgres
     tag: "17-alpine"
     pullPolicy: IfNotPresent
+  # -- Pod securityContext for PostgreSQL. runAsUser/runAsGroup/fsGroup are
+  # dropped automatically on OpenShift (see openShift above).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+    seccompProfile:
+      type: RuntimeDefault
   auth:
     username: "pacman"
     password: "pinky"
