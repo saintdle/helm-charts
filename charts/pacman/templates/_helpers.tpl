@@ -179,6 +179,45 @@ running on OpenShift (see pacman.dropFixedIDs). Call with:
 {{- toYaml $ctx -}}
 {{- end -}}
 
+{{/*
+Database environment for the app container, shared by the frontend and the
+score/user backend roles. Selects mongo or postgres from .Values.database.
+Call with the root context.
+*/}}
+{{- define "pacman.dbEnv" -}}
+{{- if eq .Values.database "mongo" -}}
+- name: DB_TYPE
+  value: mongo
+- name: MONGO_SERVICE_HOST
+  value: {{ include "pacman.mongo.fullname" . }}
+- name: MY_MONGO_PORT
+  value: "{{ .Values.mongo.service.port }}"
+- name: MONGO_USE_SSL
+  value: "false"
+- name: MONGO_VALIDATE_SSL
+  value: "false"
+- name: MONGO_AUTH_USER
+  valueFrom: { secretKeyRef: { name: {{ include "pacman.mongo.secretName" . }}, key: database-user } }
+- name: MONGO_AUTH_PWD
+  valueFrom: { secretKeyRef: { name: {{ include "pacman.mongo.secretName" . }}, key: database-password } }
+- name: MONGO_DATABASE
+  valueFrom: { secretKeyRef: { name: {{ include "pacman.mongo.secretName" . }}, key: database-name } }
+{{- else if eq .Values.database "postgres" -}}
+- name: DB_TYPE
+  value: postgres
+- name: POSTGRES_HOST
+  value: {{ include "pacman.postgres.fullname" . }}
+- name: POSTGRES_PORT
+  value: "{{ .Values.postgres.service.port }}"
+- name: POSTGRES_DB
+  valueFrom: { secretKeyRef: { name: {{ include "pacman.postgres.secretName" . }}, key: database } }
+- name: POSTGRES_USER
+  valueFrom: { secretKeyRef: { name: {{ include "pacman.postgres.secretName" . }}, key: username } }
+- name: POSTGRES_PASSWORD
+  valueFrom: { secretKeyRef: { name: {{ include "pacman.postgres.secretName" . }}, key: password } }
+{{- end -}}
+{{- end -}}
+
 {{- define "pacman.validate" -}}
 {{- $db := .Values.database -}}
 {{- if not (or (eq $db "mongo") (eq $db "postgres")) -}}

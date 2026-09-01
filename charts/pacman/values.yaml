@@ -22,6 +22,44 @@ extraEnv: []
   # - name: SOMETHING
   #   value: someValue
 
+# -- Split the single all-in-one frontend into cooperating web/score/user
+# roles, each its own Deployment and Service, so east-west traffic flows
+# between separate services (useful for Cilium/Hubble L7 demos). When disabled
+# (default) the chart deploys one all-in-one frontend. The same container image
+# runs every role; APP_ROLE selects the behaviour. The web role automatically
+# receives SCORE_SERVICE_URL/USER_SERVICE_URL pointing at the backend Services.
+roles:
+  enabled: false
+  score:
+    replicas: 1
+    # -- Defaults to the top-level `resources` when left empty.
+    resources: {}
+  user:
+    replicas: 1
+    # -- Defaults to the top-level `resources` when left empty.
+    resources: {}
+
+# -- Continuous load generator (runs `node tools/simulate-users.js` from the
+# image) that drives gameplay traffic through the frontend Service. Handy for
+# demos and observability; off by default.
+simulator:
+  enabled: false
+  replicas: 1
+  # -- Target URL. Defaults to the in-cluster frontend Service when empty.
+  baseUrl: ""
+  users: 20
+  # -- 0 runs the simulator forever.
+  durationSeconds: 0
+  minThinkMs: 800
+  maxThinkMs: 3500
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
 service:
   type: LoadBalancer
   port: 80
