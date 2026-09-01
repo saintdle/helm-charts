@@ -91,6 +91,43 @@ kubectl label ns pacman-demo \
   --overwrite
 ```
 
+## OpenShift
+
+OpenShift's `restricted-v2` SCC assigns each pod a random UID from the
+namespace's pre-allocated range and rejects pods that request a fixed
+`runAsUser`, `runAsGroup`, or `fsGroup` outside that range. The fixed IDs this
+chart normally sets (Pac-Man and the databases) would otherwise fail admission.
+
+The chart auto-detects OpenShift (it probes for the
+`security.openshift.io/v1` API group) and, when detected, drops
+`runAsUser`/`runAsGroup`/`fsGroup` from every pod so the SCC can inject its own.
+`runAsNonRoot`, `seccompProfile`, dropped capabilities, and
+`readOnlyRootFilesystem` are all preserved, so the workloads still satisfy the
+`restricted-v2` SCC. No configuration is required:
+
+```bash
+helm install pacman infra-charts/pacman
+```
+
+Override the detection with `openShift.enabled`:
+
+- `auto` (default) &mdash; probe the API server.
+- `true` &mdash; force OpenShift behaviour (useful for `helm template`).
+- `false` &mdash; never drop the fixed IDs.
+
+If you would rather keep the chart's fixed UIDs, grant the workloads the
+`nonroot-v2` SCC instead by creating a RoleBinding:
+
+```bash
+helm install pacman infra-charts/pacman \
+  --set openShift.sccRoleBinding.create=true
+```
+
+This binds the Pac-Man ServiceAccount (and the namespace `default`
+ServiceAccount used by MongoDB/PostgreSQL) to the
+`system:openshift:scc:nonroot-v2` ClusterRole and leaves the fixed IDs in place.
+Creating SCC RoleBindings requires cluster-admin.
+
 ## Existing secrets
 
 Set `mongo.existingSecret` or `postgres.existingSecret` to use a pre-created

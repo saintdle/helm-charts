@@ -138,6 +138,47 @@ root context, e.g. {{ include "pacman.frontend.labels" $ }}.
 {{- end -}}
 {{- end -}}
 
+{{/*
+Whether the target cluster is OpenShift. Returns a non-empty string ("true")
+when so. .Values.openShift.enabled may be true, false, or "auto" (in which case
+the security.openshift.io/v1 API group is probed). Call with the root context.
+*/}}
+{{- define "pacman.isOpenShift" -}}
+{{- $mode := toString (.Values.openShift).enabled -}}
+{{- if eq $mode "true" -}}
+true
+{{- else if eq $mode "false" -}}
+{{- else if .Capabilities.APIVersions.Has "security.openshift.io/v1" -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/*
+Whether to drop the fixed runAsUser/runAsGroup/fsGroup so OpenShift's SCC can
+inject them. True on OpenShift unless the user opts to keep them via a
+nonroot-v2 RoleBinding. Call with the root context.
+*/}}
+{{- define "pacman.dropFixedIDs" -}}
+{{- if and (include "pacman.isOpenShift" .) (not (.Values.openShift).sccRoleBinding.create) -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/*
+Render a pod-level securityContext, stripping runAsUser/runAsGroup/fsGroup when
+running on OpenShift (see pacman.dropFixedIDs). Call with:
+  (dict "root" $ "ctx" <securityContext map>)
+*/}}
+{{- define "pacman.podSecurityContext" -}}
+{{- $ctx := deepCopy .ctx -}}
+{{- if include "pacman.dropFixedIDs" .root -}}
+{{- $_ := unset $ctx "runAsUser" -}}
+{{- $_ := unset $ctx "runAsGroup" -}}
+{{- $_ := unset $ctx "fsGroup" -}}
+{{- end -}}
+{{- toYaml $ctx -}}
+{{- end -}}
+
 {{- define "pacman.validate" -}}
 {{- $db := .Values.database -}}
 {{- if not (or (eq $db "mongo") (eq $db "postgres")) -}}

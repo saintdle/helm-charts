@@ -56,12 +56,7 @@ spec:
     spec:
       restartPolicy: Always
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 999
-        runAsGroup: 999
-        fsGroup: 999
-        seccompProfile:
-          type: RuntimeDefault
+        {{- include "pacman.podSecurityContext" (dict "root" $ "ctx" .Values.postgres.podSecurityContext) | nindent 8 }}
       containers:
         - name: postgres
           image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
@@ -126,18 +121,16 @@ spec:
     spec:
       restartPolicy: OnFailure
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 100
-        runAsGroup: 101
-        seccompProfile:
-          type: RuntimeDefault
+        {{- include "pacman.podSecurityContext" (dict "root" $ "ctx" .Values.podSecurityContext) | nindent 8 }}
       initContainers:
         - name: wait-for-postgres
           image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
           securityContext:
             allowPrivilegeEscalation: false
+            {{- if not (include "pacman.dropFixedIDs" $) }}
             runAsUser: 999
             runAsGroup: 999
+            {{- end }}
             capabilities:
               drop: ["ALL"]
           env:
