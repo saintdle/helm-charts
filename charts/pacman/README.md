@@ -52,6 +52,42 @@ against the postgres `Service` and applies any pending migrations.
 
 The complete list is in [`values.yaml`](values.yaml).
 
+## Multi-role (scaled-out) deployment
+
+By default the chart deploys a single all-in-one frontend. Set `roles.enabled=true`
+to split it into cooperating **web**, **score**, and **user** roles, each its own
+Deployment and Service, so east-west API traffic flows between separate services
+(useful for Cilium/Hubble L7 flow demos). The same image runs every role; the
+`APP_ROLE` env var selects the behaviour, and the web role is wired to the
+backends automatically via `SCORE_SERVICE_URL`/`USER_SERVICE_URL`.
+
+```bash
+helm install pacman infra-charts/pacman --set roles.enabled=true
+```
+
+An optional load generator (`node tools/simulate-users.js`) drives gameplay
+traffic through the frontend Service:
+
+```bash
+helm install pacman infra-charts/pacman \
+  --set roles.enabled=true \
+  --set simulator.enabled=true
+```
+
+| Key                        | Description                                    | Default |
+|----------------------------|------------------------------------------------|---------|
+| `roles.enabled`            | Deploy web/score/user as separate tiers        | `false` |
+| `roles.score.replicas`     | Score backend replicas                         | `1`     |
+| `roles.user.replicas`      | User backend replicas                          | `1`     |
+| `roles.<role>.resources`   | Per-role resources (falls back to `resources`) | `{}`    |
+| `simulator.enabled`        | Run the load generator Deployment              | `false` |
+| `simulator.replicas`       | Load generator replicas                        | `1`     |
+| `simulator.users`          | Concurrent simulated users per replica         | `20`    |
+| `simulator.baseUrl`        | Target URL (defaults to the frontend Service)  | `""`    |
+
+Every role reuses the same database backend (`database`), pod securityContext,
+and OpenShift handling as the frontend, so no extra wiring is required.
+
 ## Workload labels
 
 Every workload is given a distinct identity so observability tools such as
@@ -62,6 +98,9 @@ carries a short `app` and `role` pair:
 | Workload           | `app`             | `role`     |
 |--------------------|-------------------|------------|
 | Pac-Man            | `pacman-frontend` | `frontend` |
+| Score role         | `pacman-score`    | `score`    |
+| User role          | `pacman-user`     | `user`     |
+| Load simulator     | `pacman-simulator`| `load-generator` |
 | MongoDB            | `mongodb`         | `database` |
 | PostgreSQL         | `postgres`        | `database` |
 | Postgres migration | `pacman-migrate`  | `migrate`  |

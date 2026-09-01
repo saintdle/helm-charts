@@ -26,6 +26,20 @@ Backend: {{ .Values.database }}
 
 3. Health endpoints:
    kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "pacman.fullname" . }} -- wget -qO- http://127.0.0.1:8080/healthz
+{{- if .Values.roles.enabled }}
+
+Multi-role mode is on: the frontend runs as the "web" role and proxies score
+and user API calls to the backend Services:
+   - {{ include "pacman.fullname" . }}-score:8080
+   - {{ include "pacman.fullname" . }}-user:8080
+   kubectl -n {{ .Release.Namespace }} get deploy,svc -l app.kubernetes.io/part-of=pacman
+{{- end }}
+{{- if .Values.simulator.enabled }}
+
+A load simulator ({{ include "pacman.fullname" . }}-simulator) is driving traffic
+through the frontend. Follow it with:
+   kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/component=load-generator -f
+{{- end }}
 
 {{- if eq .Values.database "postgres" }}
 {{- if .Values.postgres.migration.enabled }}

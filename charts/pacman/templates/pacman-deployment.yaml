@@ -43,37 +43,15 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            {{- if eq .Values.database "mongo" }}
-            - name: DB_TYPE
-              value: mongo
-            - name: MONGO_SERVICE_HOST
-              value: {{ include "pacman.mongo.fullname" . }}
-            - name: MY_MONGO_PORT
-              value: "{{ .Values.mongo.service.port }}"
-            - name: MONGO_USE_SSL
-              value: "false"
-            - name: MONGO_VALIDATE_SSL
-              value: "false"
-            - name: MONGO_AUTH_USER
-              valueFrom: { secretKeyRef: { name: {{ include "pacman.mongo.secretName" . }}, key: database-user } }
-            - name: MONGO_AUTH_PWD
-              valueFrom: { secretKeyRef: { name: {{ include "pacman.mongo.secretName" . }}, key: database-password } }
-            - name: MONGO_DATABASE
-              valueFrom: { secretKeyRef: { name: {{ include "pacman.mongo.secretName" . }}, key: database-name } }
-            {{- else if eq .Values.database "postgres" }}
-            - name: DB_TYPE
-              value: postgres
-            - name: POSTGRES_HOST
-              value: {{ include "pacman.postgres.fullname" . }}
-            - name: POSTGRES_PORT
-              value: "{{ .Values.postgres.service.port }}"
-            - name: POSTGRES_DB
-              valueFrom: { secretKeyRef: { name: {{ include "pacman.postgres.secretName" . }}, key: database } }
-            - name: POSTGRES_USER
-              valueFrom: { secretKeyRef: { name: {{ include "pacman.postgres.secretName" . }}, key: username } }
-            - name: POSTGRES_PASSWORD
-              valueFrom: { secretKeyRef: { name: {{ include "pacman.postgres.secretName" . }}, key: password } }
+            {{- if .Values.roles.enabled }}
+            - name: APP_ROLE
+              value: web
+            - name: SCORE_SERVICE_URL
+              value: http://{{ include "pacman.fullname" . }}-score:8080
+            - name: USER_SERVICE_URL
+              value: http://{{ include "pacman.fullname" . }}-user:8080
             {{- end }}
+            {{- include "pacman.dbEnv" . | nindent 12 }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
