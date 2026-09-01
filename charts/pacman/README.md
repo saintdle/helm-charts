@@ -35,7 +35,7 @@ against the postgres `Service` and applies any pending migrations.
 | `database`                         | `mongo` or `postgres`                             | `mongo`                  |
 | `image.repository`                 | Pac-Man image repo                                | `docker.io/saintdle/pacman` |
 | `image.tag`                        | Tag override (set to skip the digest)             | `""`                     |
-| `image.digest`                     | Image digest (used when `tag` is empty)           | pinned 1.0.0 digest      |
+| `image.digest`                     | Image digest (used when `tag` is empty)           | pinned 0.7.3 digest      |
 | `replicaCount`                     | Pac-Man pods                                      | `1`                      |
 | `service.type`                     | `LoadBalancer`, `NodePort`, `ClusterIP`           | `LoadBalancer`           |
 | `service.port`                     | Service port                                      | `80`                     |
