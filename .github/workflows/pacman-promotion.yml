@@ -1,0 +1,120 @@
+name: Promote Pac-Man release
+
+on:
+  repository_dispatch:
+    types: [pacman-release]
+  workflow_dispatch:
+    inputs:
+      app_version:
+        description: Pac-Man application version
+        required: true
+        type: string
+      image_digest:
+        description: Published multi-architecture image manifest digest
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: pacman-chart-promotion
+  cancel-in-progress: false
+
+env:
+  CHART_DIR: charts/pacman
+
+jobs:
+  promotion:
+    name: Open chart promotion PR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - name: Read promotion payload
+        id: input
+        env:
+          DISPATCH_APP_VERSION: ${{ github.event.client_payload.app_version || '' }}
+          DISPATCH_IMAGE_DIGEST: ${{ github.event.client_payload.image_digest || '' }}
+          MANUAL_APP_VERSION: ${{ inputs.app_version || '' }}
+          MANUAL_IMAGE_DIGEST: ${{ inputs.image_digest || '' }}
+        run: |
+          set -euo pipefail
+          app_version="${DISPATCH_APP_VERSION:-$MANUAL_APP_VERSION}"
+          image_digest="${DISPATCH_IMAGE_DIGEST:-$MANUAL_IMAGE_DIGEST}"
+          [[ "$app_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          {
+            echo "app_version=$app_version"
+            echo "image_digest=$image_digest"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Skip an already-promoted release
+        id: guard
+        env:
+          APP_VERSION: ${{ steps.input.outputs.app_version }}
+          IMAGE_DIGEST: ${{ steps.input.outputs.image_digest }}
+        run: |
+          set -euo pipefail
+          chart_app_version=$(yq -r '.appVersion' "$CHART_DIR/Chart.yaml")
+          chart_digest=$(yq -r '.image.digest' "$CHART_DIR/values.yaml")
+          if [[ "$chart_app_version" == "$APP_VERSION" && "$chart_digest" == "$IMAGE_DIGEST" ]]; then
+            echo "already_promoted=true" >> "$GITHUB_OUTPUT"
+            echo "Pac-Man $APP_VERSION with $IMAGE_DIGEST is already in main."
+          else
+            echo "already_promoted=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve chart version
+        id: chart
+        if: steps.guard.outputs.already_promoted == 'false'
+        env:
+          APP_VERSION: ${{ steps.input.outputs.app_version }}
+          CURRENT_CHART_VERSION: ${{ '' }}
+        run: |
+          set -euo pipefail
+          export CURRENT_CHART_VERSION="$(yq -r '.version' "$CHART_DIR/Chart.yaml")"
+          while IFS= read -r line; do
+            echo "$line" >> "$GITHUB_OUTPUT"
+          done < <(node tools/resolve-pacman-chart-version.mjs)
+
+      - name: Update chart metadata and image pin
+        if: steps.guard.outputs.already_promoted == 'false'
+        env:
+          APP_VERSION: ${{ steps.input.outputs.app_version }}
+          IMAGE_DIGEST: ${{ steps.input.outputs.image_digest }}
+          CHART_VERSION: ${{ steps.chart.outputs.chart_version }}
+        run: |
+          set -euo pipefail
+          yq -i ".version = \"$CHART_VERSION\" | .appVersion = \"$APP_VERSION\"" "$CHART_DIR/Chart.yaml"
+          yq -i ".image.digest = \"$IMAGE_DIGEST\" | .image.tag = \"\"" "$CHART_DIR/values.yaml"
+          helm lint "$CHART_DIR"
+          git diff --check
+
+      - name: Open or update chart promotion PR
+        if: steps.guard.outputs.already_promoted == 'false'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.RELEASE_AUTOMATION_TOKEN }}
+          branch: automation/pacman-${{ steps.input.outputs.app_version }}
+          delete-branch: false
+          commit-message: "chore(pacman): promote image ${{ steps.input.outputs.app_version }}"
+          title: "chore(pacman): promote ${{ steps.input.outputs.app_version }}"
+          body: |
+            Automated Pac-Man promotion.
+
+            - Application version: `${{ steps.input.outputs.app_version }}`
+            - Chart version: `${{ steps.chart.outputs.chart_version }}`
+            - Image digest: `${{ steps.input.outputs.image_digest }}`
+
+            The chart version follows the app version when that chart release is
+            unused. Otherwise, it uses the next unused chart patch version.
