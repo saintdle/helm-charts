@@ -6,8 +6,8 @@ description: |
   probes, optional ingress, and ClusterRole bindings for the in-app
   pod/node location probe.
 type: application
-version: 0.7.6
-appVersion: "0.7.5"
+version: 0.7.7
+appVersion: "0.7.7"
 home: https://github.com/saintdle/pacman
 sources:
   - https://github.com/saintdle/pacman
