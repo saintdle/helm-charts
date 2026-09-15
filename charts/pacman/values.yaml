@@ -2,25 +2,21 @@
 
 # -- Backend database engine. One of: mongo, postgres.
 database: mongo
-
 image:
   # Pinned by digest for reproducibility. Override `tag` to skip the digest.
   repository: docker.io/saintdle/pacman
-  digest: "sha256:d3af1ec78579c497f9f4c075e42455209e68fad7531d936f731594eb64b19ab2"
+  digest: "sha256:4de4f422b5edb49b606055525c5dc29c3824446f401f6ece241d7ae6302d1fca"
   tag: ""
   pullPolicy: IfNotPresent
 imagePullSecrets: []
-
 # -- Override the fully-qualified release name.
 fullnameOverride: ""
 nameOverride: ""
-
 replicaCount: 1
-
 # -- Extra environment variables on the pacman container.
 extraEnv: []
-  # - name: SOMETHING
-  #   value: someValue
+# - name: SOMETHING
+#   value: someValue
 
 # -- Split the single all-in-one frontend into cooperating web/score/user
 # roles, each its own Deployment and Service, so east-west traffic flows
@@ -38,7 +34,6 @@ roles:
     replicas: 1
     # -- Defaults to the top-level `resources` when left empty.
     resources: {}
-
 # -- Continuous load generator (runs `node tools/simulate-users.js` from the
 # image) that drives gameplay traffic through the frontend Service. Handy for
 # demos and observability; off by default.
@@ -59,13 +54,11 @@ simulator:
     limits:
       cpu: 500m
       memory: 256Mi
-
 service:
   type: LoadBalancer
   port: 80
   # nodePort: 30080      # only used when type=NodePort
   annotations: {}
-
 ingress:
   enabled: false
   className: ""
@@ -76,7 +69,6 @@ ingress:
         - path: /
           pathType: Prefix
   tls: []
-
 resources:
   requests:
     cpu: 50m
@@ -84,7 +76,6 @@ resources:
   limits:
     cpu: 500m
     memory: 256Mi
-
 # -- OpenShift integration. The restricted-v2 SCC assigns a random UID from the
 # namespace's range, so on OpenShift the chart drops the fixed
 # runAsUser/runAsGroup/fsGroup from every pod securityContext and lets the
@@ -97,7 +88,6 @@ openShift:
     # the nonroot-v2 SCC. Requires permission to create RoleBindings to
     # system:openshift:scc:* ClusterRoles.
     create: false
-
 # -- Pod securityContext for the Pac-Man frontend. runAsUser/runAsGroup/fsGroup
 # are dropped automatically on OpenShift (see openShift above).
 podSecurityContext:
@@ -107,30 +97,25 @@ podSecurityContext:
   fsGroup: 101
   seccompProfile:
     type: RuntimeDefault
-
 securityContext:
   allowPrivilegeEscalation: false
   readOnlyRootFilesystem: true
   capabilities:
     drop: ["ALL"]
-
 # -- ServiceAccount used by the pacman Deployment. Granted cluster-scoped
 # get/watch/list on pods and nodes (used by the in-app location probe).
 serviceAccount:
   create: true
   name: ""
   annotations: {}
-
 rbac:
   # -- Create the ClusterRole and ClusterRoleBinding for the location probe.
   create: true
-
 podAnnotations: {}
 podLabels: {}
 nodeSelector: {}
 tolerations: []
 affinity: {}
-
 # -- HorizontalPodAutoscaler for pacman.
 autoscaling:
   enabled: false
@@ -138,7 +123,6 @@ autoscaling:
   maxReplicas: 5
   targetCPUUtilizationPercentage: 80
   # targetMemoryUtilizationPercentage: 80
-
 # -------- MongoDB (when database=mongo) --------
 mongo:
   image:
@@ -200,7 +184,6 @@ mongo:
     periodSeconds: 10
     timeoutSeconds: 10
     failureThreshold: 6
-
 # -------- PostgreSQL (when database=postgres) --------
 postgres:
   image:
