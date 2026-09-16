@@ -4,8 +4,36 @@ entries:
   - annotations:
       category: Demo
     apiVersion: v2
+    appVersion: 0.7.10
+    created: "2026-09-16T11:37:10.896456323Z"
+    description: 'Pac-Man (Node.js + Express) on Kubernetes with a MongoDB or PostgreSQL
+      backend. Hardened to Pod Security Standards "restricted", health/readiness probes,
+      optional ingress, and ClusterRole bindings for the in-app pod/node location
+      probe. '
+    digest: aac9e065f44115e6afc2fcbb1f9da5d4037bff4adeb7131ac0e557c2daf04edb
+    home: https://github.com/saintdle/pacman
+    icon: https://veducate.co.uk/wp-content/uploads/2021/09/Pac-Man-UI.jpg
+    keywords:
+    - pacman
+    - game
+    - demo
+    - cilium
+    maintainers:
+    - name: Dean Lewis
+      url: https://veducate.co.uk
+    name: pacman
+    sources:
+    - https://github.com/saintdle/pacman
+    - https://github.com/saintdle/pacman-for-k8s
+    type: application
+    urls:
+    - https://saintdle.github.io/helm-charts/pacman-0.7.10.tgz
+    version: 0.7.10
+  - annotations:
+      category: Demo
+    apiVersion: v2
     appVersion: 0.7.9
-    created: "2026-09-15T14:04:40.357600456Z"
+    created: "2026-09-16T11:37:10.903681195Z"
     description: 'Pac-Man (Node.js + Express) on Kubernetes with a MongoDB or PostgreSQL
       backend. Hardened to Pod Security Standards "restricted", health/readiness probes,
       optional ingress, and ClusterRole bindings for the in-app pod/node location
@@ -33,7 +61,7 @@ entries:
       category: Demo
     apiVersion: v2
     appVersion: 0.7.8
-    created: "2026-09-15T14:04:40.356932197Z"
+    created: "2026-09-16T11:37:10.902728626Z"
     description: 'Pac-Man (Node.js + Express) on Kubernetes with a MongoDB or PostgreSQL
       backend. Hardened to Pod Security Standards "restricted", health/readiness probes,
       optional ingress, and ClusterRole bindings for the in-app pod/node location
@@ -61,7 +89,7 @@ entries:
       category: Demo
     apiVersion: v2
     appVersion: 0.7.5
-    created: "2026-09-15T14:04:40.356237969Z"
+    created: "2026-09-16T11:37:10.900992052Z"
     description: 'Pac-Man (Node.js + Express) on Kubernetes with a MongoDB or PostgreSQL
       backend. Hardened to Pod Security Standards "restricted", health/readiness probes,
       optional ingress, and ClusterRole bindings for the in-app pod/node location
@@ -89,7 +117,7 @@ entries:
       category: Demo
     apiVersion: v2
     appVersion: 0.7.5
-    created: "2026-09-15T14:04:40.355537121Z"
+    created: "2026-09-16T11:37:10.900076297Z"
     description: 'Pac-Man (Node.js + Express) on Kubernetes with a MongoDB or PostgreSQL
       backend. Hardened to Pod Security Standards "restricted", health/readiness probes,
       optional ingress, and ClusterRole bindings for the in-app pod/node location
@@ -117,7 +145,7 @@ entries:
       category: Demo
     apiVersion: v2
     appVersion: 0.7.3
-    created: "2026-09-15T14:04:40.354812868Z"
+    created: "2026-09-16T11:37:10.899170557Z"
     description: 'Pac-Man (Node.js + Express) on Kubernetes with a MongoDB or PostgreSQL
       backend. Hardened to Pod Security Standards "restricted", health/readiness probes,
       optional ingress, and ClusterRole bindings for the in-app pod/node location
@@ -145,7 +173,7 @@ entries:
       category: Demo
     apiVersion: v2
     appVersion: 0.7.2
-    created: "2026-09-15T14:04:40.353836655Z"
+    created: "2026-09-16T11:37:10.898216676Z"
     description: 'Pac-Man (Node.js + Express) on Kubernetes with a MongoDB or PostgreSQL
       backend. Hardened to Pod Security Standards "restricted", health/readiness probes,
       optional ingress, and ClusterRole bindings for the in-app pod/node location
@@ -173,7 +201,7 @@ entries:
       category: Demo
     apiVersion: v2
     appVersion: 0.7.2
-    created: "2026-09-15T14:04:40.352898539Z"
+    created: "2026-09-16T11:37:10.897302995Z"
     description: 'Pac-Man (Node.js + Express) on Kubernetes with a MongoDB or PostgreSQL
       backend. Hardened to Pod Security Standards "restricted", health/readiness probes,
       optional ingress, and ClusterRole bindings for the in-app pod/node location
@@ -201,7 +229,7 @@ entries:
       category: Demo
     apiVersion: v2
     appVersion: 0.6.0
-    created: "2026-09-15T14:04:40.3521837Z"
+    created: "2026-09-16T11:37:10.895503153Z"
     description: 'Pac-Man (Node.js + Express) on Kubernetes with a MongoDB or PostgreSQL
       backend. Hardened to Pod Security Standards "restricted", health/readiness probes,
       optional ingress, and ClusterRole bindings for the in-app pod/node location
@@ -229,7 +257,7 @@ entries:
       category: Demo
     apiVersion: v2
     appVersion: 0.6.0
-    created: "2026-09-15T14:04:40.351636434Z"
+    created: "2026-09-16T11:37:10.894716769Z"
     description: 'Pac-Man (Node.js + Express) on Kubernetes with a MongoDB or PostgreSQL
       backend. Hardened to Pod Security Standards "restricted", health/readiness probes,
       optional ingress, and ClusterRole bindings for the in-app pod/node location
@@ -257,7 +285,7 @@ entries:
       category: Demo
     apiVersion: v2
     appVersion: 0.6.0
-    created: "2026-09-15T14:04:40.351048617Z"
+    created: "2026-09-16T11:37:10.89350008Z"
     description: 'Pac-Man (Node.js + Express) on Kubernetes with a MongoDB or PostgreSQL
       backend. Hardened to Pod Security Standards "restricted", health/readiness probes,
       optional ingress, and ClusterRole bindings for the in-app pod/node location
@@ -285,7 +313,7 @@ entries:
       category: Demo
     apiVersion: v2
     appVersion: 0.6.0
-    created: "2026-09-15T14:04:40.350483735Z"
+    created: "2026-09-16T11:37:10.892529324Z"
     description: 'Pac-Man (Node.js + Express) on Kubernetes with a MongoDB or PostgreSQL
       backend. Hardened to Pod Security Standards "restricted", health/readiness probes,
       optional ingress, and ClusterRole bindings for the in-app pod/node location
@@ -311,7 +339,7 @@ entries:
     version: 0.6.0
   - apiVersion: v2
     appVersion: 0.5.3.1
-    created: "2026-09-15T14:04:40.349950199Z"
+    created: "2026-09-16T11:37:10.891811582Z"
     description: Pac-Man for Kubernetes
     digest: da237c835ccec5936a2633d7961cc9764b22de231b0a94e9670b7c267e2cd7a8
     home: https://github.com/saintdle/pacman-tanzu
@@ -322,4 +350,4 @@ entries:
     urls:
     - https://saintdle.github.io/helm-charts/pacman-0.1.0.tgz
     version: 0.1.0
-generated: "2026-09-15T14:04:40.349476334Z"
+generated: "2026-09-16T11:37:10.891204033Z"
