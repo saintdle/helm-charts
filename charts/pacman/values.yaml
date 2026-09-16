@@ -5,7 +5,7 @@ database: mongo
 image:
   # Pinned by digest for reproducibility. Override `tag` to skip the digest.
   repository: docker.io/saintdle/pacman
-  digest: "sha256:10b98ba444d3267e204306e43b3956ddf6c607699748bf06b4c4fc6ea501a6c3"
+  digest: "sha256:b3589f460b45899114ff7d9a104f7c1d0c76bd1f559d5dc4f688fa642a5c148e"
   tag: ""
   pullPolicy: IfNotPresent
 imagePullSecrets: []
