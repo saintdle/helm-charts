@@ -121,6 +121,10 @@ jobs:
         if: steps.detect.outputs.changed == 'true'
         run: helm lint "$CHART_DIR"
 
+      - name: Verify application probe contract
+        if: steps.detect.outputs.changed == 'true'
+        run: bash tools/check-pacman-probes.sh "$CHART_DIR"
+
       - name: Render manifests and build preview
         id: render
         if: steps.detect.outputs.changed == 'true'
