@@ -76,6 +76,30 @@ resources:
   limits:
     cpu: 500m
     memory: 256Mi
+
+# -- HTTP probes for Pac-Man application containers. Set either probe's enabled
+# field to false to disable it. Liveness uses the dependency-free /healthz
+# endpoint, while readiness uses /readyz and remains dependency-aware.
+probes:
+  liveness:
+    enabled: true
+    httpGet:
+      path: /healthz
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+  readiness:
+    enabled: true
+    httpGet:
+      path: /readyz
+      port: http
+    initialDelaySeconds: 3
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 3
+
 # -- OpenShift integration. The restricted-v2 SCC assigns a random UID from the
 # namespace's range, so on OpenShift the chart drops the fixed
 # runAsUser/runAsGroup/fsGroup from every pod securityContext and lets the

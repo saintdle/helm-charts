@@ -218,6 +218,17 @@ Call with the root context.
 {{- end -}}
 {{- end -}}
 
+{{- define "pacman.applicationProbes" -}}
+{{- $probes := .Values.probes | default dict -}}
+{{- range $name := list "liveness" "readiness" }}
+{{- $probe := index $probes $name | default dict -}}
+{{- if and $probe (or (not (hasKey $probe "enabled")) $probe.enabled) }}
+{{- $renderedProbe := omit $probe "enabled" }}
+{{ $name }}Probe: {{- toYaml $renderedProbe | nindent 2 }}
+{{ end }}
+{{ end }}
+{{- end -}}
+
 {{- define "pacman.validate" -}}
 {{- $db := .Values.database -}}
 {{- if not (or (eq $db "mongo") (eq $db "postgres")) -}}

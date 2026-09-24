@@ -43,6 +43,8 @@ against the postgres `Service` and applies any pending migrations.
 | `autoscaling.enabled`              | Enable HPA                                        | `false`                  |
 | `rbac.create`                      | ClusterRole+CRB for in-app pod/node probe         | `true`                   |
 | `serviceAccount.create`            | Dedicated SA for pacman                           | `true`                   |
+| `probes.liveness`                  | Lightweight application liveness probe            | `/healthz`, 5s timeout   |
+| `probes.readiness`                 | Dependency-aware application readiness probe      | `/readyz`, 5s timeout    |
 | `mongo.auth.*`                     | Mongo credentials (root + app user)               | demo values              |
 | `mongo.persistence.size`           | Mongo PVC size                                    | `1Gi`                    |
 | `mongo.existingSecret`             | Use a pre-created Secret instead                  | `""`                     |
@@ -51,6 +53,15 @@ against the postgres `Service` and applies any pending migrations.
 | `postgres.migration.enabled`       | Run `node src/db/migrate.js` as Helm hook         | `true`                   |
 
 The complete list is in [`values.yaml`](values.yaml).
+
+Application liveness uses `/healthz`, which only checks that the Node.js
+process can serve HTTP and does not query the database or other services.
+Readiness uses `/readyz`, which checks the configured database before admitting
+traffic. Both probes are configurable under `probes`; set either probe's
+`enabled` field to `false` to omit it when a deployment needs to provide its
+own health policy. The default liveness timeout is five seconds with a failure
+threshold of six, so short periods of event-loop contention do not cause kubelet
+restarts.
 
 ## Multi-role (scaled-out) deployment
 
@@ -87,6 +98,14 @@ helm install pacman infra-charts/pacman \
 
 Every role reuses the same database backend (`database`), pod securityContext,
 and OpenShift handling as the frontend, so no extra wiring is required.
+
+## Upgrading to 0.7.13
+
+This release makes the Pac-Man application probes configurable and increases
+the default liveness timeout to five seconds with six consecutive failures
+allowed. Existing installs will use the new defaults on upgrade; override
+`probes.liveness` or `probes.readiness` when a deployment needs different
+thresholds, or set `probes.<name>.enabled=false` to disable that probe.
 
 ## Workload labels
 
