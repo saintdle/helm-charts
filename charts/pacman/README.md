@@ -35,7 +35,7 @@ against the postgres `Service` and applies any pending migrations.
 | `database`                         | `mongo` or `postgres`                             | `mongo`                  |
 | `image.repository`                 | Pac-Man image repo                                | `docker.io/saintdle/pacman` |
 | `image.tag`                        | Tag override (set to skip the digest)             | `""`                     |
-| `image.digest`                     | Image digest (used when `tag` is empty)           | pinned 0.7.12 digest     |
+| `image.digest`                     | Image digest (used when `tag` is empty)           | pinned released digest  |
 | `replicaCount`                     | Pac-Man pods                                      | `1`                      |
 | `service.type`                     | `LoadBalancer`, `NodePort`, `ClusterIP`           | `LoadBalancer`           |
 | `service.port`                     | Service port                                      | `80`                     |
@@ -101,10 +101,9 @@ and OpenShift handling as the frontend, so no extra wiring is required.
 
 ## Fault and security-probe demos
 
-The chart still defaults to the released Pac-Man image digest, whose app
-version is 0.7.12. That image does not include the new fault and security-probe
-runtime. Build and load a matching app candidate, then override the image in
-Helm before enabling these controls.
+The chart still defaults to its pinned released Pac-Man image. That image does
+not include the new fault and security-probe runtime. Build and load a matching
+app candidate, then override the image in Helm before enabling these controls.
 
 From the root of the matching Pac-Man app source checkout, build the candidate.
 The revision label records the source commit used for the build:
@@ -118,9 +117,10 @@ docker build -f docker/Dockerfile \
   .
 ```
 
-Load that image into the kind cluster, then set the chart image repository,
-tag, digest, and pull policy. Include these values with the demo settings shown
-below in `local-fault-demo.yaml`:
+Load that image into the kind cluster. In the root of your helm-charts source
+checkout, create `local-fault-demo.yaml` with the image overrides below and the
+demo settings shown later in this section. Create the nonempty token Secret
+described below before running the Helm upgrade:
 
 ```bash
 kind load docker-image docker.io/library/pacman:fault-demo-local --name my-cluster
