@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+chart_dir="${1:-charts/pacman}"
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+
+helm template defaults "$chart_dir" >"$tmp_dir/defaults.yaml"
+if grep -q 'name: DEMO_TOKEN$' "$tmp_dir/defaults.yaml"; then
+  echo "default render unexpectedly injects a demo token" >&2
+  exit 1
+fi
+
+if helm template invalid "$chart_dir" --set demo.unknownField=true >"$tmp_dir/invalid.yaml" 2>&1; then
+  echo "schema accepted an unknown demo field" >&2
+  exit 1
+fi
+if helm template invalid "$chart_dir" --set simulator.users=101 >"$tmp_dir/invalid.yaml" 2>&1; then
+  echo "schema accepted simulator.users above the contract limit" >&2
+  exit 1
+fi
+if helm template invalid "$chart_dir" --set demo.enabled=true >"$tmp_dir/invalid.yaml" 2>&1; then
+  echo "demo.enabled without an existing token Secret was accepted" >&2
+  exit 1
+fi
+
+cat >"$tmp_dir/valid.yaml" <<'YAML'
+roles:
+  enabled: true
+simulator:
+  enabled: true
+  faults:
+    enabled: true
+    seed: 7
+    durationSeconds: 60
+    rules:
+      - operations: [scoreWrite]
+        targetRole: score
+        errorRate: 0.2
+        errorStatus: 503
+        delayRate: 0.3
+        delayMs: {min: 10, max: 500}
+  securityProbes:
+    enabled: true
+    seed: 8
+    durationSeconds: 60
+    operations:
+      - {operation: fileProbe, ratePerSecond: 1, maxCount: 2}
+      - {operation: execProbe, ratePerSecond: 0.5, maxCount: 2}
+demo:
+  enabled: true
+  existingTokenSecret: pacman-demo-token
+  fileProbeEnabled: true
+  execProbeEnabled: true
+YAML
+helm template valid "$chart_dir" -f "$tmp_dir/valid.yaml" >"$tmp_dir/valid-render.yaml"
+grep -q 'command: \["node", "/app/tools/simulate-users.js"\]' "$tmp_dir/valid-render.yaml"
+grep -q 'name: SIM_FAULTS_JSON' "$tmp_dir/valid-render.yaml"
+grep -q 'name: SIM_SECURITY_PROBES_JSON' "$tmp_dir/valid-render.yaml"
+grep -q 'key: token' "$tmp_dir/valid-render.yaml"
+grep -q 'name: DEMO_SECURITY_MODE' "$tmp_dir/valid-render.yaml"
+grep -q 'name: DEMO_FILE_PROBE_ENABLED' "$tmp_dir/valid-render.yaml"
+grep -q 'name: DEMO_EXEC_PROBE_ENABLED' "$tmp_dir/valid-render.yaml"
+grep -q 'scoreWrite' "$tmp_dir/valid-render.yaml"
+grep -q 'fileProbe' "$tmp_dir/valid-render.yaml"
+token_refs="$(grep -c 'name: DEMO_TOKEN$' "$tmp_dir/valid-render.yaml")"
+[[ "$token_refs" -eq 4 ]] || { echo "expected token refs in frontend, score, user, and simulator; got $token_refs" >&2; exit 1; }
+
+checksum_for() {
+  sed -n 's/^[[:space:]]*checksum\/pacman-demo: //p' "$1" | head -n 1
+}
+base_checksum="$(checksum_for "$tmp_dir/valid-render.yaml")"
+helm template secret-change "$chart_dir" -f "$tmp_dir/valid.yaml" --set demo.existingTokenSecret=another-token-secret >"$tmp_dir/secret-change.yaml"
+secret_checksum="$(checksum_for "$tmp_dir/secret-change.yaml")"
+helm template config-change "$chart_dir" -f "$tmp_dir/valid.yaml" --set simulator.faults.seed=9 >"$tmp_dir/config-change.yaml"
+config_checksum="$(checksum_for "$tmp_dir/config-change.yaml")"
+[[ "$base_checksum" != "$secret_checksum" && "$base_checksum" != "$config_checksum" ]] || {
+  echo "demo rollout checksum did not change with Secret identity and JSON config" >&2
+  exit 1
+}
+
+if helm template invalid "$chart_dir" -f "$tmp_dir/valid.yaml" --set simulator.faults.rules[0].targetRole=user >"$tmp_dir/invalid.yaml" 2>&1; then
+  echo "chart accepted an operation/role mismatch" >&2
+  exit 1
+fi
+if helm template invalid "$chart_dir" -f "$tmp_dir/valid.yaml" --set roles.enabled=false >"$tmp_dir/invalid.yaml" 2>&1; then
+  echo "chart accepted a backend fault target without backend role Deployments" >&2
+  exit 1
+fi
+if helm template invalid "$chart_dir" -f "$tmp_dir/valid.yaml" --set simulator.faults.rules[0].delayMs.min=900 --set simulator.faults.rules[0].delayMs.max=10 >"$tmp_dir/invalid.yaml" 2>&1; then
+  echo "chart accepted delayMs.min greater than max" >&2
+  exit 1
+fi
+
+helm template openshift "$chart_dir" --set roles.enabled=true --set simulator.enabled=true --api-versions security.openshift.io/v1 >"$tmp_dir/openshift.yaml"
+if grep -Eq '^[[:space:]]*(runAsUser|runAsGroup|fsGroup):' "$tmp_dir/openshift.yaml"; then
+  echo "OpenShift render retained fixed pod IDs" >&2
+  exit 1
+fi
+
+echo "Pac-Man fault-demo values, render, checksum, and OpenShift checks passed"
