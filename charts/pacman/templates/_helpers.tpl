@@ -360,6 +360,12 @@ Call with the root context.
 {{- if and .Values.tetragon.enabled (not (or $demo.fileProbeEnabled $demo.execProbeEnabled)) -}}
 {{- fail "tetragon.enabled requires demo.fileProbeEnabled or demo.execProbeEnabled" -}}
 {{- end -}}
+{{- if and (not .Values.tetragon.enabled) (eq .Values.tetragon.fileProbeMode "enforce") -}}
+{{- fail "tetragon.fileProbeMode=enforce requires tetragon.enabled=true" -}}
+{{- end -}}
+{{- if and (not .Values.tetragon.enabled) (eq .Values.tetragon.execProbeMode "enforce") -}}
+{{- fail "tetragon.execProbeMode=enforce requires tetragon.enabled=true" -}}
+{{- end -}}
 {{- if and (eq .Values.tetragon.fileProbeMode "enforce") (not $demo.fileProbeEnabled) -}}
 {{- fail "tetragon.fileProbeMode=enforce requires demo.fileProbeEnabled=true" -}}
 {{- end -}}
