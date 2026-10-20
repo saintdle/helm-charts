@@ -99,6 +99,98 @@ helm install pacman infra-charts/pacman \
 Every role reuses the same database backend (`database`), pod securityContext,
 and OpenShift handling as the frontend, so no extra wiring is required.
 
+## Fault and security-probe demos
+
+Fault injection and synthetic security probes are opt-in. The defaults for
+`demo.enabled`, `simulator.faults.enabled`, `simulator.securityProbes.enabled`,
+`demo.fileProbeEnabled`, and `demo.execProbeEnabled` are all `false`. To enable
+them, create a Secret with a nonempty `token` key and set
+`demo.existingTokenSecret` to its name. The chart does not render the token
+value into manifests:
+
+```bash
+kubectl -n pacman-demo create secret generic pacman-demo-token \
+  --from-literal=token="$DEMO_TOKEN"
+```
+
+Use `demo.tokenHeader` to change the default `x-demo-token` request header.
+Incident endpoints require demo mode and the matching token. Each synthetic
+probe must also be enabled with its corresponding `demo.fileProbeEnabled` or
+`demo.execProbeEnabled` value.
+
+The simulator accepts typed schedules under `simulator.faults` and
+`simulator.securityProbes`; both are disabled with empty rule/operation lists by
+default. For example, this schedule injects a 503 on 10% of score reads at the
+score backend and adds a bounded delay on 20% of them. It enables a file probe
+schedule as well; the matching app probe switch must also be enabled:
+
+```yaml
+demo:
+  enabled: true
+  existingTokenSecret: pacman-demo-token
+  fileProbeEnabled: true
+simulator:
+  enabled: true
+  faults:
+    enabled: true
+    seed: 42
+    durationSeconds: 300
+    rules:
+      - operations: [scoreRead]
+        targetRole: score
+        errorRate: 0.1
+        errorStatus: 503
+        delayRate: 0.2
+        delayMs:
+          min: 500
+          max: 1500
+  securityProbes:
+    enabled: true
+    seed: 42
+    durationSeconds: 300
+    operations:
+      - operation: fileProbe
+        ratePerSecond: 0.2
+        maxCount: 10
+```
+
+Fault operations are `scoreRead`, `scoreWrite`, `userRead`, `userWrite`, and
+`pageView`; `targetRole` is `web`, `score`, or `user`. These are independent
+dimensions: `web` can target any logical operation, while score and user
+backends consume only their own operation families. A selected logical request
+consumes its fault once. The simulator uses a deterministic per-worker random
+stream from `seed`; durations, delay (0 to 10,000 ms), status (500 to 599),
+rates, probe counts, and user concurrency are schema-validated and bounded. Probe
+operations are `fileProbe` and `execProbe`, each with a `ratePerSecond` of at
+most 10 and `maxCount` at most 1000. The simulator sends the token from the
+Secret separately from the schedule JSON.
+
+The chart rolls workloads when the demo settings, schedule JSON, or Secret
+identity changes. Its checksum tracks the Secret namespace, name, and `token`
+key identity, not the external Secret's token contents. After changing the
+token value under the same Secret name, restart all web, score, user, and
+simulator workloads together, or rotate to a new Secret name and upgrade the
+chart.
+
+Optional integrations remain separately controlled: `serviceMonitor.enabled`
+creates a ServiceMonitor; `ciliumNetworkPolicy.enabled` creates the chart's
+typed Cilium policy (with score-write denial controlled by
+`ciliumNetworkPolicy.denyScoreWrites`); and `tetragon.enabled` creates the
+file/exec tracing policies, with `tetragon.fileProbeMode` and
+`tetragon.execProbeMode` set to `observe` or `enforce`. The Tetragon policies
+match only the fixed synthetic file and helper under the selected Pac-Man pods.
+Enforcement depends on kernel support for BPF kprobe override and a compatible
+syscall path; a pathname check has a time-of-check/time-of-use limitation.
+Preflight those requirements and verify actual actions and unrelated-workload
+negative controls before relying on enforcement. Chart rendering or policy
+presence alone does not demonstrate runtime enforcement.
+
+The Pac-Man app image uses explicit Node entrypoints and a nonroot distroless
+runtime. It has no shell inside the image and does not launch through npm or
+use wget/curl for health checks. The runtime supports arbitrary nonroot UIDs;
+Docker tests and static OpenShift compatibility checks do not establish that a
+cluster deployment has been tested on OpenShift.
+
 ## Upgrading to 0.7.13
 
 This release makes the Pac-Man application probes configurable and increases
