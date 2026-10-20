@@ -35,7 +35,7 @@ against the postgres `Service` and applies any pending migrations.
 | `database`                         | `mongo` or `postgres`                             | `mongo`                  |
 | `image.repository`                 | Pac-Man image repo                                | `docker.io/saintdle/pacman` |
 | `image.tag`                        | Tag override (set to skip the digest)             | `""`                     |
-| `image.digest`                     | Image digest (used when `tag` is empty)           | pinned 0.7.5 digest      |
+| `image.digest`                     | Image digest (used when `tag` is empty)           | pinned 0.7.12 digest     |
 | `replicaCount`                     | Pac-Man pods                                      | `1`                      |
 | `service.type`                     | `LoadBalancer`, `NodePort`, `ClusterIP`           | `LoadBalancer`           |
 | `service.port`                     | Service port                                      | `80`                     |
@@ -100,6 +100,45 @@ Every role reuses the same database backend (`database`), pod securityContext,
 and OpenShift handling as the frontend, so no extra wiring is required.
 
 ## Fault and security-probe demos
+
+The chart still defaults to the released Pac-Man image digest, whose app
+version is 0.7.12. That image does not include the new fault and security-probe
+runtime. Build and load a matching app candidate, then override the image in
+Helm before enabling these controls.
+
+From the root of the matching Pac-Man app source checkout, build the candidate.
+The revision label records the source commit used for the build:
+
+```bash
+docker build -f docker/Dockerfile \
+  --tag docker.io/library/pacman:fault-demo-local \
+  --build-arg APP_VERSION=fault-demo-local \
+  --build-arg COMMIT_SHA="$(git rev-parse HEAD)" \
+  --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  .
+```
+
+Load that image into the kind cluster, then set the chart image repository,
+tag, digest, and pull policy. Include these values with the demo settings shown
+below in `local-fault-demo.yaml`:
+
+```bash
+kind load docker-image docker.io/library/pacman:fault-demo-local --name my-cluster
+helm upgrade --install pacman ./charts/pacman \
+  --namespace pacman-demo --create-namespace \
+  --values local-fault-demo.yaml
+```
+
+```yaml
+image:
+  repository: docker.io/library/pacman
+  tag: fault-demo-local
+  digest: ""
+  pullPolicy: Never
+```
+
+This local candidate workflow does not publish an image or change the chart's
+version or default image digest.
 
 Fault injection and synthetic security probes are opt-in. The defaults for
 `demo.enabled`, `simulator.faults.enabled`, `simulator.securityProbes.enabled`,
@@ -185,11 +224,11 @@ Preflight those requirements and verify actual actions and unrelated-workload
 negative controls before relying on enforcement. Chart rendering or policy
 presence alone does not demonstrate runtime enforcement.
 
-The Pac-Man app image uses explicit Node entrypoints and a nonroot distroless
-runtime. It has no shell inside the image and does not launch through npm or
-use wget/curl for health checks. The runtime supports arbitrary nonroot UIDs;
-Docker tests and static OpenShift compatibility checks do not establish that a
-cluster deployment has been tested on OpenShift.
+The matching new app candidate uses explicit Node entrypoints and a nonroot
+distroless runtime. It has no shell inside the image and does not launch
+through npm or use wget/curl for health checks. The runtime supports arbitrary
+nonroot UIDs; Docker tests and static OpenShift compatibility checks do not
+establish that a cluster deployment has been tested on OpenShift.
 
 ## Upgrading to 0.7.13
 
