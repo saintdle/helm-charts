@@ -66,6 +66,20 @@ grep -q 'fileProbe' "$tmp_dir/valid-render.yaml"
 token_refs="$(grep -c 'name: DEMO_TOKEN$' "$tmp_dir/valid-render.yaml")"
 [[ "$token_refs" -eq 4 ]] || { echo "expected token refs in frontend, score, user, and simulator; got $token_refs" >&2; exit 1; }
 
+helm template null-annotations "$chart_dir" --set podAnnotations=null --set roles.enabled=true --set simulator.enabled=true >"$tmp_dir/null-annotations.yaml"
+null_checksum_count="$(grep -c 'checksum/pacman-demo:' "$tmp_dir/null-annotations.yaml" || true)"
+[[ "$null_checksum_count" -eq 4 ]] || { echo "null podAnnotations omitted a rollout checksum from one or more workloads" >&2; exit 1; }
+for component in frontend score user load-generator; do
+  grep -q "app.kubernetes.io/component: $component$" "$tmp_dir/null-annotations.yaml" || {
+    echo "null podAnnotations render omitted the $component workload" >&2
+    exit 1
+  }
+done
+
+helm template custom-annotations "$chart_dir" --set-string podAnnotations.rollout-tag=retain --set roles.enabled=true --set simulator.enabled=true >"$tmp_dir/custom-annotations.yaml"
+custom_annotation_count="$(grep -c 'rollout-tag: retain$' "$tmp_dir/custom-annotations.yaml" || true)"
+[[ "$custom_annotation_count" -eq 4 ]] || { echo "custom podAnnotations were not retained across all four workloads" >&2; exit 1; }
+
 checksum_for() {
   sed -n 's/^[[:space:]]*checksum\/pacman-demo: //p' "$1" | head -n 1
 }
@@ -95,6 +109,11 @@ fi
 helm template openshift "$chart_dir" --set roles.enabled=true --set simulator.enabled=true --api-versions security.openshift.io/v1 >"$tmp_dir/openshift.yaml"
 if grep -Eq '^[[:space:]]*(runAsUser|runAsGroup|fsGroup):' "$tmp_dir/openshift.yaml"; then
   echo "OpenShift render retained fixed pod IDs" >&2
+  exit 1
+fi
+
+if grep -q 'wget' "$chart_dir/templates/NOTES.txt" || ! grep -q -- '-- node -e' "$chart_dir/templates/NOTES.txt"; then
+  echo "installation notes must use the Node health check supported by the distroless image" >&2
   exit 1
 fi
 

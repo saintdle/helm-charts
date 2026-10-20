@@ -166,7 +166,7 @@ root context, e.g. {{ include "pacman.frontend.labels" $ }}.
 {{- end -}}
 
 {{- define "pacman.demo.annotations" -}}
-{{- $annotations := deepCopy .Values.podAnnotations -}}
+{{- $annotations := deepCopy (.Values.podAnnotations | default dict) -}}
 {{- $_ := set $annotations "checksum/pacman-demo" (include "pacman.demo.checksum" .) -}}
 {{- toYaml $annotations -}}
 {{- end -}}
