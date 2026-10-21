@@ -10,11 +10,23 @@ if grep -q 'name: DEMO_TOKEN$' "$tmp_dir/defaults.yaml"; then
   echo "default render unexpectedly injects a demo token" >&2
   exit 1
 fi
+grep -q 'value: "x-demo-token"' "$tmp_dir/defaults.yaml" || {
+  echo "default demo token header was not rendered" >&2
+  exit 1
+}
 
 if helm template invalid "$chart_dir" --set demo.unknownField=true >"$tmp_dir/invalid.yaml" 2>&1; then
   echo "schema accepted an unknown demo field" >&2
   exit 1
 fi
+if helm template invalid-token-header "$chart_dir" --set-string 'demo.tokenHeader=bad header' >"$tmp_dir/invalid.yaml" 2>&1; then
+  echo "schema accepted an invalid HTTP header name" >&2
+  exit 1
+fi
+grep -q 'demo.tokenHeader' "$tmp_dir/invalid.yaml" || {
+  echo "invalid HTTP header name was rejected for an unexpected reason" >&2
+  exit 1
+}
 if helm template invalid "$chart_dir" --set simulator.users=101 >"$tmp_dir/invalid.yaml" 2>&1; then
   echo "schema accepted simulator.users above the contract limit" >&2
   exit 1
@@ -50,10 +62,16 @@ simulator:
 demo:
   enabled: true
   existingTokenSecret: pacman-demo-token
+  tokenHeader: X-Demo_Token.2
   fileProbeEnabled: true
   execProbeEnabled: true
 YAML
 helm template valid "$chart_dir" -f "$tmp_dir/valid.yaml" >"$tmp_dir/valid-render.yaml"
+custom_header_count="$(grep -c 'value: "X-Demo_Token.2"' "$tmp_dir/valid-render.yaml" || true)"
+[[ "$custom_header_count" -eq 4 ]] || {
+  echo "custom HTTP header was not rendered across all four workloads; got $custom_header_count" >&2
+  exit 1
+}
 grep -q 'command: \["node", "/app/tools/simulate-users.js"\]' "$tmp_dir/valid-render.yaml"
 grep -q 'name: SIM_FAULTS_JSON' "$tmp_dir/valid-render.yaml"
 grep -q 'name: SIM_SECURITY_PROBES_JSON' "$tmp_dir/valid-render.yaml"

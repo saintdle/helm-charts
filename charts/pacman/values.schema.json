@@ -8,7 +8,7 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "existingTokenSecret": { "type": "string", "maxLength": 253, "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" },
-        "tokenHeader": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "tokenHeader": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$" },
         "fileProbeEnabled": { "type": "boolean" },
         "execProbeEnabled": { "type": "boolean" }
       }
