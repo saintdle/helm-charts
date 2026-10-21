@@ -122,6 +122,10 @@ root context, e.g. {{ include "pacman.frontend.labels" $ }}.
 {{- printf "%s-postgres" (include "pacman.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{- define "pacman.postgres.migration.fullname" -}}
+{{- printf "%s-migrate" (include "pacman.postgres.fullname" . | trunc 55 | trimSuffix "-") -}}
+{{- end -}}
+
 {{- define "pacman.mongo.secretName" -}}
 {{- if .Values.mongo.existingSecret -}}
 {{ .Values.mongo.existingSecret }}

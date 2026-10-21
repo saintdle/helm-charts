@@ -279,8 +279,7 @@ postgres:
       memory: 512Mi
   service:
     port: 5432
-  # -- Run the schema migration `Job` shipped with the pacman image
-  # (`node scripts/postgres-migrate.js`) on install/upgrade.
+  # -- Run the PostgreSQL schema migration Job after installs and upgrades.
   migration:
     enabled: true
     backoffLimit: 6

@@ -107,8 +107,11 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "pacman.postgres.fullname" . }}-migrate
+  name: {{ include "pacman.postgres.migration.fullname" . }}
   namespace: {{ .Release.Namespace }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
   labels:
     {{- include "pacman.migrate.labels" $ | nindent 4 }}
 spec:

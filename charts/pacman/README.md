@@ -25,8 +25,14 @@ helm install pacman veducate/pacman \
   --set database=postgres
 ```
 
-A schema migration `Job` runs as a Helm `pre-install` / `pre-upgrade` hook
-against the postgres `Service` and applies any pending migrations.
+When you select PostgreSQL, Helm runs the migration Job as a `post-install` and
+`post-upgrade` hook. Before the initial hook starts, Helm creates the
+PostgreSQL Service with the release. The Job waits until PostgreSQL accepts
+connections.
+
+After Helm applies the release resources, it runs the `post-upgrade` hook. Helm
+deletes successful hook Jobs. Before the next run, Helm deletes any previous
+Job. Kubernetes cleans up failed Jobs after their 10-minute TTL.
 
 ## Common overrides
 
@@ -50,7 +56,7 @@ against the postgres `Service` and applies any pending migrations.
 | `mongo.existingSecret`             | Use a pre-created Secret instead                  | `""`                     |
 | `mongo.livenessProbe` / `mongo.readinessProbe` | Mongo health probes; `mongosh` needs a generous `timeoutSeconds` | `10s` timeout |
 | `postgres.auth.*`                  | Postgres credentials                              | demo values              |
-| `postgres.migration.enabled`       | Run `node src/db/migrate.js` as Helm hook         | `true`                   |
+| `postgres.migration.enabled`       | Runs migrations                                | `true`                   |
 
 The complete list is in [`values.yaml`](values.yaml).
 
