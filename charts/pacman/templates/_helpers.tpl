@@ -122,6 +122,10 @@ root context, e.g. {{ include "pacman.frontend.labels" $ }}.
 {{- printf "%s-postgres" (include "pacman.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{- define "pacman.postgres.migration.fullname" -}}
+{{- printf "%s-migrate" (include "pacman.postgres.fullname" . | trunc 55 | trimSuffix "-") -}}
+{{- end -}}
+
 {{- define "pacman.mongo.secretName" -}}
 {{- if .Values.mongo.existingSecret -}}
 {{ .Values.mongo.existingSecret }}
@@ -136,6 +140,39 @@ root context, e.g. {{ include "pacman.frontend.labels" $ }}.
 {{- else -}}
 {{ include "pacman.postgres.fullname" . }}
 {{- end -}}
+{{- end -}}
+
+{{- define "pacman.demo.secretName" -}}
+{{- .Values.demo.existingTokenSecret -}}
+{{- end -}}
+
+{{- define "pacman.demo.tokenEnv" -}}
+{{- if .Values.demo.enabled }}
+- name: DEMO_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "pacman.demo.secretName" . }}
+      key: token
+{{- end }}
+{{- end -}}
+
+{{/* Hash only public config and Secret identity, never the token value. */}}
+{{- define "pacman.demo.checksum" -}}
+{{- toJson (dict
+  "faults" .Values.simulator.faults
+  "securityProbes" .Values.simulator.securityProbes
+  "demoEnabled" .Values.demo.enabled
+  "fileProbeEnabled" .Values.demo.fileProbeEnabled
+  "execProbeEnabled" .Values.demo.execProbeEnabled
+  "secretNamespace" .Release.Namespace
+  "secretName" (include "pacman.demo.secretName" .)
+  "secretKey" "token") | sha256sum -}}
+{{- end -}}
+
+{{- define "pacman.demo.annotations" -}}
+{{- $annotations := deepCopy (.Values.podAnnotations | default dict) -}}
+{{- $_ := set $annotations "checksum/pacman-demo" (include "pacman.demo.checksum" .) -}}
+{{- toYaml $annotations -}}
 {{- end -}}
 
 {{/*
@@ -233,5 +270,116 @@ Call with the root context.
 {{- $db := .Values.database -}}
 {{- if not (or (eq $db "mongo") (eq $db "postgres")) -}}
 {{- fail (printf ".Values.database must be 'mongo' or 'postgres', got %q" $db) -}}
+{{- end -}}
+{{- $demo := .Values.demo -}}
+{{- $sim := .Values.simulator -}}
+{{- if and $demo.enabled (empty $demo.existingTokenSecret) -}}
+{{- fail ".Values.demo.existingTokenSecret is required when demo.enabled=true; Secret key 'token' must exist" -}}
+{{- end -}}
+{{- if or $sim.faults.enabled $sim.securityProbes.enabled -}}
+{{- if not $demo.enabled -}}
+{{- fail "simulator fault/security probe JSON requires demo.enabled=true and DEMO_SECURITY_MODE=true" -}}
+{{- end -}}
+{{- if not $sim.enabled -}}
+{{- fail "simulator fault/security probe JSON requires simulator.enabled=true" -}}
+{{- end -}}
+{{- if empty $demo.existingTokenSecret -}}
+{{- fail "simulator fault/security probe JSON requires demo.existingTokenSecret referencing a Secret with key 'token'" -}}
+{{- end -}}
+{{- end -}}
+{{- $seenFaultOps := dict -}}
+{{- if and $sim.faults.enabled (empty $sim.faults.rules) -}}
+{{- fail "simulator.faults.enabled requires at least one rule" -}}
+{{- end -}}
+{{- if and (not $sim.faults.enabled) (gt (len $sim.faults.rules) 0) -}}
+{{- fail "simulator.faults.rules must be empty when faults.enabled=false" -}}
+{{- end -}}
+{{- range $index, $rule := $sim.faults.rules -}}
+{{- if gt $rule.delayMs.min $rule.delayMs.max -}}
+{{- fail (printf "simulator.faults.rules[%d].delayMs.min must be <= max" $index) -}}
+{{- end -}}
+{{- $rateTotal := addf $rule.errorRate $rule.delayRate -}}
+{{- if gt $rateTotal 1.0 -}}
+{{- fail (printf "simulator.faults.rules[%d] errorRate plus delayRate must not exceed 1" $index) -}}
+{{- end -}}
+{{- if empty $rateTotal -}}
+{{- fail (printf "simulator.faults.rules[%d] must enable an error or delay fault" $index) -}}
+{{- end -}}
+{{- if and $rule.delayRate (not $rule.delayMs.max) -}}
+{{- fail (printf "simulator.faults.rules[%d].delayMs.max must be positive when delayRate is enabled" $index) -}}
+{{- end -}}
+{{- range $operation := $rule.operations -}}
+{{- $expectedRole := "" -}}
+{{- if hasPrefix "score" $operation -}}{{- $expectedRole = "score" -}}{{- else if hasPrefix "user" $operation -}}{{- $expectedRole = "user" -}}{{- else if eq $operation "pageView" -}}{{- $expectedRole = "web" -}}{{- end -}}
+{{- if and (ne $rule.targetRole "web") (ne $rule.targetRole $expectedRole) -}}
+{{- fail (printf "simulator.faults.rules[%d].targetRole %q does not support operation %q" $index $rule.targetRole $operation) -}}
+{{- end -}}
+{{- if and (not $.Values.roles.enabled) (ne $rule.targetRole "web") -}}
+{{- fail (printf "simulator.faults.rules[%d] targetRole %q requires roles.enabled=true" $index $rule.targetRole) -}}
+{{- end -}}
+{{- if hasKey $seenFaultOps $operation -}}
+{{- fail (printf "simulator.faults operation %q appears in more than one rule" $operation) -}}
+{{- end -}}
+{{- $_ := set $seenFaultOps $operation true -}}
+{{- end -}}
+{{- end -}}
+{{- $probeOps := list -}}
+{{- $probeRateTotal := 0.0 -}}
+{{- $probeCountTotal := 0 -}}
+{{- range $entry := $sim.securityProbes.operations -}}
+{{- if has $entry.operation $probeOps -}}
+{{- fail (printf "simulator.securityProbes operation %q appears more than once" $entry.operation) -}}
+{{- end -}}
+{{- $probeOps = append $probeOps $entry.operation -}}
+{{- $probeRateTotal = addf $probeRateTotal $entry.ratePerSecond -}}
+{{- $probeCountTotal = add $probeCountTotal $entry.maxCount -}}
+{{- if and $sim.securityProbes.enabled (empty $entry.ratePerSecond) -}}
+{{- fail (printf "simulator.securityProbes operation %q needs a positive ratePerSecond when enabled" $entry.operation) -}}
+{{- end -}}
+{{- end -}}
+{{- if and $sim.securityProbes.enabled (empty $probeOps) -}}
+{{- fail "simulator.securityProbes.enabled requires at least one operation" -}}
+{{- end -}}
+{{- if and (not $sim.securityProbes.enabled) (gt (len $probeOps) 0) -}}
+{{- fail "simulator.securityProbes.operations must be empty when securityProbes.enabled=false" -}}
+{{- end -}}
+{{- if gt $probeRateTotal 10.0 -}}
+{{- fail "simulator.securityProbes combined ratePerSecond must not exceed 10" -}}
+{{- end -}}
+{{- if gt $probeCountTotal 1000 -}}
+{{- fail "simulator.securityProbes combined maxCount must not exceed 1000" -}}
+{{- end -}}
+{{- if ne $demo.fileProbeEnabled (has "fileProbe" $probeOps) -}}
+{{- fail "demo.fileProbeEnabled must match whether simulator.securityProbes.operations includes fileProbe" -}}
+{{- end -}}
+{{- if ne $demo.execProbeEnabled (has "execProbe" $probeOps) -}}
+{{- fail "demo.execProbeEnabled must match whether simulator.securityProbes.operations includes execProbe" -}}
+{{- end -}}
+{{- if and .Values.ciliumNetworkPolicy.enabled (not .Values.roles.enabled) -}}
+{{- fail "ciliumNetworkPolicy.enabled requires roles.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.ciliumNetworkPolicy.denyScoreWrites (not .Values.ciliumNetworkPolicy.enabled) -}}
+{{- fail "ciliumNetworkPolicy.denyScoreWrites requires ciliumNetworkPolicy.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.tetragon.enabled (not (or $demo.fileProbeEnabled $demo.execProbeEnabled)) -}}
+{{- fail "tetragon.enabled requires demo.fileProbeEnabled or demo.execProbeEnabled" -}}
+{{- end -}}
+{{- if and (not .Values.tetragon.enabled) (eq .Values.tetragon.fileProbeMode "enforce") -}}
+{{- fail "tetragon.fileProbeMode=enforce requires tetragon.enabled=true" -}}
+{{- end -}}
+{{- if and (not .Values.tetragon.enabled) (eq .Values.tetragon.execProbeMode "enforce") -}}
+{{- fail "tetragon.execProbeMode=enforce requires tetragon.enabled=true" -}}
+{{- end -}}
+{{- if and (eq .Values.tetragon.fileProbeMode "enforce") (not $demo.fileProbeEnabled) -}}
+{{- fail "tetragon.fileProbeMode=enforce requires demo.fileProbeEnabled=true" -}}
+{{- end -}}
+{{- if and (eq .Values.tetragon.execProbeMode "enforce") (not $demo.execProbeEnabled) -}}
+{{- fail "tetragon.execProbeMode=enforce requires demo.execProbeEnabled=true" -}}
+{{- end -}}
+{{- $reservedEnv := list "DEMO_SECURITY_MODE" "DEMO_TOKEN" "DEMO_TOKEN_HEADER" "DEMO_FILE_PROBE_ENABLED" "DEMO_EXEC_PROBE_ENABLED" "SIM_FAULTS_JSON" "SIM_SECURITY_PROBES_JSON" -}}
+{{- range $entry := .Values.extraEnv -}}
+{{- if has $entry.name $reservedEnv -}}
+{{- fail (printf "extraEnv must not override chart-managed variable %s" $entry.name) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}

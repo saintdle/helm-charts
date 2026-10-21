@@ -25,7 +25,7 @@ Backend: {{ .Values.database }}
 {{- end }}
 
 3. Health endpoints:
-   kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "pacman.fullname" . }} -- wget -qO- http://127.0.0.1:8080/healthz
+   kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "pacman.fullname" . }} -- node -e 'require("http").get("http://127.0.0.1:8080/healthz", r => { console.log(r.statusCode); r.resume(); if (r.statusCode !== 200) process.exitCode = 1; }).on("error", e => { console.error(e.message); process.exit(1); })'
 {{- if .Values.roles.enabled }}
 
 Multi-role mode is on: the frontend runs as the "web" role and proxies score

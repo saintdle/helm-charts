@@ -19,9 +19,7 @@ spec:
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.podAnnotations }}
-      annotations: {{- toYaml . | nindent 8 }}
-      {{- end }}
+      annotations: {{- include "pacman.demo.annotations" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "pacman.serviceAccountName" . }}
       {{- with .Values.imagePullSecrets }}
@@ -33,7 +31,7 @@ spec:
         - name: simulator
           image: {{ include "pacman.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["node", "tools/simulate-users.js"]
+          command: ["node", "/app/tools/simulate-users.js"]
           securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
           env:
             - name: PACMAN_BASE_URL
@@ -46,6 +44,15 @@ spec:
               value: {{ .Values.simulator.minThinkMs | quote }}
             - name: MAX_THINK_MS
               value: {{ .Values.simulator.maxThinkMs | quote }}
+            - name: DEMO_SECURITY_MODE
+              value: {{ .Values.demo.enabled | quote }}
+            - name: DEMO_TOKEN_HEADER
+              value: {{ .Values.demo.tokenHeader | quote }}
+            {{- include "pacman.demo.tokenEnv" . | nindent 12 }}
+            - name: SIM_FAULTS_JSON
+              value: {{ toJson .Values.simulator.faults | quote }}
+            - name: SIM_SECURITY_PROBES_JSON
+              value: {{ toJson .Values.simulator.securityProbes | quote }}
           resources: {{- toYaml .Values.simulator.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}
       nodeSelector: {{- toYaml . | nindent 8 }}
