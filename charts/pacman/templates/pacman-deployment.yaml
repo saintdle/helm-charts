@@ -19,9 +19,7 @@ spec:
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.podAnnotations }}
-      annotations: {{- toYaml . | nindent 8 }}
-      {{- end }}
+      annotations: {{- include "pacman.demo.annotations" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "pacman.serviceAccountName" . }}
       {{- with .Values.imagePullSecrets }}
@@ -43,6 +41,15 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            - name: DEMO_SECURITY_MODE
+              value: {{ .Values.demo.enabled | quote }}
+            - name: DEMO_TOKEN_HEADER
+              value: {{ .Values.demo.tokenHeader | quote }}
+            - name: DEMO_FILE_PROBE_ENABLED
+              value: {{ .Values.demo.fileProbeEnabled | quote }}
+            - name: DEMO_EXEC_PROBE_ENABLED
+              value: {{ .Values.demo.execProbeEnabled | quote }}
+            {{- include "pacman.demo.tokenEnv" . | nindent 12 }}
             {{- if .Values.roles.enabled }}
             - name: APP_ROLE
               value: web

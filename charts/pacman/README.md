@@ -25,8 +25,14 @@ helm install pacman veducate/pacman \
   --set database=postgres
 ```
 
-A schema migration `Job` runs as a Helm `pre-install` / `pre-upgrade` hook
-against the postgres `Service` and applies any pending migrations.
+When you select PostgreSQL, Helm runs the migration Job as a `post-install` and
+`post-upgrade` hook. Before the initial hook starts, Helm creates the
+PostgreSQL Service with the release. The Job waits until PostgreSQL accepts
+connections.
+
+After Helm applies the release resources, it runs the `post-upgrade` hook. Helm
+deletes successful hook Jobs. Before the next run, Helm deletes any previous
+Job. Kubernetes cleans up failed Jobs after their 10-minute TTL.
 
 ## Common overrides
 
@@ -35,7 +41,7 @@ against the postgres `Service` and applies any pending migrations.
 | `database`                         | `mongo` or `postgres`                             | `mongo`                  |
 | `image.repository`                 | Pac-Man image repo                                | `docker.io/saintdle/pacman` |
 | `image.tag`                        | Tag override (set to skip the digest)             | `""`                     |
-| `image.digest`                     | Image digest (used when `tag` is empty)           | pinned 0.7.5 digest      |
+| `image.digest`                     | Image digest (used when `tag` is empty)           | pinned released digest  |
 | `replicaCount`                     | Pac-Man pods                                      | `1`                      |
 | `service.type`                     | `LoadBalancer`, `NodePort`, `ClusterIP`           | `LoadBalancer`           |
 | `service.port`                     | Service port                                      | `80`                     |
@@ -50,7 +56,7 @@ against the postgres `Service` and applies any pending migrations.
 | `mongo.existingSecret`             | Use a pre-created Secret instead                  | `""`                     |
 | `mongo.livenessProbe` / `mongo.readinessProbe` | Mongo health probes; `mongosh` needs a generous `timeoutSeconds` | `10s` timeout |
 | `postgres.auth.*`                  | Postgres credentials                              | demo values              |
-| `postgres.migration.enabled`       | Run `node src/db/migrate.js` as Helm hook         | `true`                   |
+| `postgres.migration.enabled`       | Runs migrations                                | `true`                   |
 
 The complete list is in [`values.yaml`](values.yaml).
 
@@ -98,6 +104,137 @@ helm install pacman infra-charts/pacman \
 
 Every role reuses the same database backend (`database`), pod securityContext,
 and OpenShift handling as the frontend, so no extra wiring is required.
+
+## Fault and security-probe demos
+
+The chart still defaults to its pinned released Pac-Man image. That image does
+not include the new fault and security-probe runtime. Build and load a matching
+app candidate, then override the image in Helm before enabling these controls.
+
+From the root of the matching Pac-Man app source checkout, build the candidate.
+The revision label records the source commit used for the build:
+
+```bash
+docker build -f docker/Dockerfile \
+  --tag docker.io/library/pacman:fault-demo-local \
+  --build-arg APP_VERSION=fault-demo-local \
+  --build-arg COMMIT_SHA="$(git rev-parse HEAD)" \
+  --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  .
+```
+
+Load that image into the kind cluster. In the root of your helm-charts source
+checkout, create `local-fault-demo.yaml` with the image overrides below and the
+demo settings shown later in this section. Create the nonempty token Secret
+described below before running the Helm upgrade:
+
+```bash
+kind load docker-image docker.io/library/pacman:fault-demo-local --name my-cluster
+helm upgrade --install pacman ./charts/pacman \
+  --namespace pacman-demo --create-namespace \
+  --values local-fault-demo.yaml
+```
+
+```yaml
+image:
+  repository: docker.io/library/pacman
+  tag: fault-demo-local
+  digest: ""
+  pullPolicy: Never
+```
+
+This local candidate workflow does not publish an image or change the chart's
+version or default image digest.
+
+Fault injection and synthetic security probes are opt-in. The defaults for
+`demo.enabled`, `simulator.faults.enabled`, `simulator.securityProbes.enabled`,
+`demo.fileProbeEnabled`, and `demo.execProbeEnabled` are all `false`. To enable
+them, create a Secret with a nonempty `token` key and set
+`demo.existingTokenSecret` to its name. The chart does not render the token
+value into manifests:
+
+```bash
+kubectl -n pacman-demo create secret generic pacman-demo-token \
+  --from-literal=token="$DEMO_TOKEN"
+```
+
+Use `demo.tokenHeader` to change the default `x-demo-token` request header.
+Incident endpoints require demo mode and the matching token. Each synthetic
+probe must also be enabled with its corresponding `demo.fileProbeEnabled` or
+`demo.execProbeEnabled` value.
+
+The simulator accepts typed schedules under `simulator.faults` and
+`simulator.securityProbes`; both are disabled with empty rule/operation lists by
+default. For example, this schedule injects a 503 on 10% of score reads at the
+score backend and adds a bounded delay on 20% of them. It enables a file probe
+schedule as well; the matching app probe switch must also be enabled:
+
+```yaml
+demo:
+  enabled: true
+  existingTokenSecret: pacman-demo-token
+  fileProbeEnabled: true
+simulator:
+  enabled: true
+  faults:
+    enabled: true
+    seed: 42
+    durationSeconds: 300
+    rules:
+      - operations: [scoreRead]
+        targetRole: score
+        errorRate: 0.1
+        errorStatus: 503
+        delayRate: 0.2
+        delayMs:
+          min: 500
+          max: 1500
+  securityProbes:
+    enabled: true
+    seed: 42
+    durationSeconds: 300
+    operations:
+      - operation: fileProbe
+        ratePerSecond: 0.2
+        maxCount: 10
+```
+
+Fault operations are `scoreRead`, `scoreWrite`, `userRead`, `userWrite`, and
+`pageView`; `targetRole` is `web`, `score`, or `user`. These are independent
+dimensions: `web` can target any logical operation, while score and user
+backends consume only their own operation families. A selected logical request
+consumes its fault once. The simulator uses a deterministic per-worker random
+stream from `seed`; durations, delay (0 to 10,000 ms), status (500 to 599),
+rates, probe counts, and user concurrency are schema-validated and bounded. Probe
+operations are `fileProbe` and `execProbe`, each with a `ratePerSecond` of at
+most 10 and `maxCount` at most 1000. The simulator sends the token from the
+Secret separately from the schedule JSON.
+
+The chart rolls workloads when the demo settings, schedule JSON, or Secret
+identity changes. Its checksum tracks the Secret namespace, name, and `token`
+key identity, not the external Secret's token contents. After changing the
+token value under the same Secret name, restart all web, score, user, and
+simulator workloads together, or rotate to a new Secret name and upgrade the
+chart.
+
+Optional integrations remain separately controlled: `serviceMonitor.enabled`
+creates a ServiceMonitor; `ciliumNetworkPolicy.enabled` creates the chart's
+typed Cilium policy (with score-write denial controlled by
+`ciliumNetworkPolicy.denyScoreWrites`); and `tetragon.enabled` creates the
+file/exec tracing policies, with `tetragon.fileProbeMode` and
+`tetragon.execProbeMode` set to `observe` or `enforce`. The Tetragon policies
+match only the fixed synthetic file and helper under the selected Pac-Man pods.
+Enforcement depends on kernel support for BPF kprobe override and a compatible
+syscall path; a pathname check has a time-of-check/time-of-use limitation.
+Preflight those requirements and verify actual actions and unrelated-workload
+negative controls before relying on enforcement. Chart rendering or policy
+presence alone does not demonstrate runtime enforcement.
+
+The matching new app candidate uses explicit Node entrypoints and a nonroot
+distroless runtime. It has no shell inside the image and does not launch
+through npm or use wget/curl for health checks. The runtime supports arbitrary
+nonroot UIDs; Docker tests and static OpenShift compatibility checks do not
+establish that a cluster deployment has been tested on OpenShift.
 
 ## Upgrading to 0.7.13
 
