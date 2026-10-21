@@ -5,7 +5,7 @@ database: mongo
 image:
   # Pinned by digest for reproducibility. Override `tag` to skip the digest.
   repository: docker.io/saintdle/pacman
-  digest: "sha256:b3589f460b45899114ff7d9a104f7c1d0c76bd1f559d5dc4f688fa642a5c148e"
+  digest: "sha256:46c641de22f09f88c4f10a7860bcc8ae8022309f3dc6cb0c32c77e7383a40ee7"
   tag: ""
   pullPolicy: IfNotPresent
 imagePullSecrets: []
@@ -76,7 +76,6 @@ resources:
   limits:
     cpu: 500m
     memory: 256Mi
-
 # -- HTTP probes for Pac-Man application containers. Set either probe's enabled
 # field to false to disable it. Liveness uses the dependency-free /healthz
 # endpoint, while readiness uses /readyz and remains dependency-aware.
@@ -99,7 +98,6 @@ probes:
     periodSeconds: 5
     timeoutSeconds: 5
     failureThreshold: 3
-
 # -- OpenShift integration. The restricted-v2 SCC assigns a random UID from the
 # namespace's range, so on OpenShift the chart drops the fixed
 # runAsUser/runAsGroup/fsGroup from every pod securityContext and lets the
