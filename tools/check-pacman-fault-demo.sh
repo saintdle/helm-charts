@@ -15,6 +15,35 @@ grep -q 'value: "x-demo-token"' "$tmp_dir/defaults.yaml" || {
   exit 1
 }
 
+# Cilium's HTTP path matcher receives the request path with its query string.
+# Keep the score-read exception scoped to that endpoint while allowing the
+# pagination and simulator-filter query options forwarded by the frontend.
+helm template cnp "$chart_dir" --set roles.enabled=true --set ciliumNetworkPolicy.enabled=true >"$tmp_dir/cnp.yaml"
+score_read_regex="$(sed -n 's/^[[:space:]]*path: //p' "$tmp_dir/cnp.yaml" | grep -F '/internal/score/read' | head -n 1)"
+expected_score_read_regex='^/internal/score/read(\?.*)?$'
+[[ "$score_read_regex" == "$expected_score_read_regex" ]] || {
+  echo "score-read Cilium rule did not render the exact query-aware path regex: $score_read_regex" >&2
+  exit 1
+}
+for request_path in \
+  '/internal/score/read' \
+  '/internal/score/read?page=2&pageSize=10&includeSimulated=false' \
+  '/internal/score/read?includeSimulated=false'; do
+  [[ "$request_path" =~ $score_read_regex ]] || {
+    echo "score-read Cilium rule rejected a valid request path: $request_path" >&2
+    exit 1
+  }
+done
+for request_path in \
+  '/internal/score/readiness' \
+  '/internal/score/read/more' \
+  '/internal/score/write'; do
+  if [[ "$request_path" =~ $score_read_regex ]]; then
+    echo "score-read Cilium rule matched an unrelated path: $request_path" >&2
+    exit 1
+  fi
+done
+
 if helm template invalid "$chart_dir" --set demo.unknownField=true >"$tmp_dir/invalid.yaml" 2>&1; then
   echo "schema accepted an unknown demo field" >&2
   exit 1

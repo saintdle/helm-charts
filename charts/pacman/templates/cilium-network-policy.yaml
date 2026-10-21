@@ -28,7 +28,7 @@ spec:
           rules:
             http:
               - method: GET
-                path: ^/internal/score/read$
+                path: ^/internal/score/read(\?.*)?$
               {{- if not .Values.ciliumNetworkPolicy.denyScoreWrites }}
               - method: POST
                 path: ^/internal/score/write$
