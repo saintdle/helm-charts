@@ -188,7 +188,7 @@ export function selectPendingProposalState({ state, pullRequests, branchSha, bas
     || !digestPattern.test(state.app?.image_manifest_list_digest ?? '')
     || !checksumPattern.test(state.app?.sha256 ?? '') || !versionPattern.test(state.app?.version ?? '')
     || !versionPattern.test(state.chart?.version ?? '')) return null;
-  const matches = pullRequests.filter((proposal) => proposal?.state === 'OPEN'
+  const matches = pullRequests.filter((proposal) => proposal?.state === 'OPEN' && proposal.isCrossRepository === false
     && proposal.headRefName === 'automation/pacman-promotion' && proposal.headRefOid === branchSha
     && proposal.baseRefName === 'main' && proposal.baseRefOid === baseSha);
   return matches.length === 1 ? state : null;

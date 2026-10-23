@@ -87,8 +87,8 @@ jobs:
             fi
             branch_sha=$(git rev-parse refs/remotes/origin/automation/pacman-promotion)
           fi
-          gh pr list --repo saintdle/helm-charts --head saintdle:automation/pacman-promotion --base main --state all \
-            --json state,headRefName,headRefOid,baseRefName,baseRefOid > /tmp/pacman-promotion-prs.json
+          gh pr list --repo saintdle/helm-charts --head automation/pacman-promotion --base main --state all \
+            --json state,headRefName,headRefOid,baseRefName,baseRefOid,isCrossRepository > /tmp/pacman-promotion-prs.json
           PENDING_BRANCH_SHA="$branch_sha" PENDING_BASE_SHA="$(git rev-parse HEAD)" \
             PENDING_FILTERED_PATH=/tmp/pacman-pending-state.json \
             node tools/pacman-promotion.mjs filter-pending /tmp/pacman-branch-state.json /tmp/pacman-promotion-prs.json

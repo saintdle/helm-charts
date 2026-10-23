@@ -140,7 +140,7 @@ test('workflow pending filter accepts only the exact open proposal and keeps ver
   const pending = { schema_version: 1, kind: 'pacman-chart-promotion-state', mode: 'automatic',
     app: { version: '0.7.18', reference: 'app.json', sha256: 'b'.repeat(64), image_manifest_list_digest: `sha256:${'c'.repeat(64)}` },
     chart: { version: '0.7.19' } };
-  const proposal = { state: 'OPEN', headRefName: 'automation/pacman-promotion', headRefOid: 'a'.repeat(40),
+  const proposal = { state: 'OPEN', isCrossRepository: false, headRefName: 'automation/pacman-promotion', headRefOid: 'a'.repeat(40),
     baseRefName: 'main', baseRefOid: 'd'.repeat(40) };
   assert.deepEqual(filterPendingState(pending, [proposal]), pending);
   assert.equal(preservePendingPromotion({ pendingAppVersion: pending.app.version, pendingImageDigest: pending.app.image_manifest_list_digest,
@@ -148,9 +148,21 @@ test('workflow pending filter accepts only the exact open proposal and keeps ver
   assert.equal(preservePendingPromotion({ pendingAppVersion: '0.7.16', pendingImageDigest: pending.app.image_manifest_list_digest,
     candidateAppVersion: '0.7.18', candidateImageDigest: pending.app.image_manifest_list_digest }), null);
   for (const proposalState of ['CLOSED', 'MERGED']) assert.equal(filterPendingState(pending, [{ ...proposal, state: proposalState }]), null);
+  assert.equal(filterPendingState(pending, [{ ...proposal, isCrossRepository: true }]), null);
+  const { isCrossRepository, ...missingRepositoryIdentity } = proposal;
+  assert.equal(filterPendingState(pending, [missingRepositoryIdentity]), null);
   assert.equal(filterPendingState(pending, []), null);
   assert.equal(filterPendingState(pending, [{ ...proposal, headRefOid: 'e'.repeat(40) }]), null);
   assert.equal(filterPendingState(pending, [{ ...proposal, baseRefOid: 'f'.repeat(40) }]), null);
+});
+
+test('workflow query uses supported branch filtering and requests repository identity', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/pacman-promotion.yml', import.meta.url), 'utf8');
+  const query = workflow.split('\n').filter((line) => line.includes('gh pr list --repo saintdle/helm-charts')
+    || line.trim().startsWith('--json state,headRefName')).join(' ');
+  assert.match(query, /--head automation\/pacman-promotion/);
+  assert.doesNotMatch(query, /--head saintdle:/);
+  assert.match(query, /isCrossRepository/);
 });
 
 test('schema-v1 app record and metadata must agree on checksum and identity', () => {
