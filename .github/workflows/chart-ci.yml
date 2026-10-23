@@ -1,15 +1,18 @@
 name: Chart CI
 
-# Runs on every pull request so the two required checks always report a status
-# (a required check that never runs would block the PR forever). Both checks are
-# no-ops when the chart is untouched:
+# Runs on every pull request so required checks always report a status (a
+# required check that never runs would block the PR forever). The version gate
+# is a no-op when charts/pacman is untouched; the chart contract suites run
+# when the chart, their scripts, or this workflow changes:
 #   * version-gate — fails unless charts/pacman/Chart.yaml `version` is bumped
 #     to a new, unreleased value when the chart changes. This is the "new version
 #     must be declared" flag that must be green before the PR can merge.
-#   * manifests    — lints the chart and renders the manifests for both database
-#     backends, posts a preview (diff vs. the base branch) as a sticky PR
-#     comment, and uploads the full rendered manifests as an artifact so they
-#     can be reviewed or applied before the PR merges.
+#   * manifests   — runs every static contract, lints the chart, and renders
+#     manifests for both database backends, posts a preview (diff vs. the base
+#     branch) as a sticky PR comment, and uploads the full rendered manifests
+#     as an artifact so they can be reviewed or applied before the PR merges.
+#   * lifecycle   — builds the frozen Pac-Man source and tests both database
+#     backends through install and upgrade in owned Kind clusters.
 
 on:
   pull_request:
@@ -22,6 +25,7 @@ env:
   CHART_DIR: charts/pacman
   HELM_VERSION: v3.16.4
   PAGES_URL: https://saintdle.github.io/helm-charts
+  PACMAN_SOURCE_SHA: e05647623417f620ec0b156c9e7551ec5ad040dd
 
 concurrency:
   group: chart-ci-${{ github.event.pull_request.number }}
@@ -105,17 +109,23 @@ jobs:
         with:
           version: ${{ env.HELM_VERSION }}
 
-      - name: Detect chart change
+      - name: Detect chart contract change
         id: detect
         run: |
           set -euo pipefail
           git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
-          if git diff --quiet FETCH_HEAD -- "$CHART_DIR"; then
+          if git diff --quiet FETCH_HEAD -- "$CHART_DIR" tools/check-pacman-*.sh .github/workflows/chart-ci.yml; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "Chart unchanged; manifest preview skipped."
+            echo "Chart contracts unchanged; chart checks and preview skipped."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Report chart checks no-op
+        if: steps.detect.outputs.changed != 'true'
+        run: |
+          echo "Chart unchanged; lint, rendering, and all four contract suites are not applicable."
+          echo "### Chart checks skipped (chart unchanged)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Lint chart
         if: steps.detect.outputs.changed == 'true'
@@ -128,6 +138,14 @@ jobs:
       - name: Verify PostgreSQL migration lifecycle
         if: steps.detect.outputs.changed == 'true'
         run: bash tools/check-pacman-postgres-migration.sh "$CHART_DIR"
+
+      - name: Verify fault-demo contract
+        if: steps.detect.outputs.changed == 'true'
+        run: bash tools/check-pacman-fault-demo.sh "$CHART_DIR"
+
+      - name: Verify optional-resource contract
+        if: steps.detect.outputs.changed == 'true'
+        run: bash tools/check-pacman-optional-resources.sh "$CHART_DIR"
 
       - name: Render manifests and build preview
         id: render
@@ -228,3 +246,86 @@ jobs:
             } else {
               await github.rest.issues.createComment({ owner, repo, issue_number, body });
             }
+
+  lifecycle:
+    name: lifecycle (${{ matrix.database }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [mongo, postgres]
+    steps:
+      - name: Checkout chart PR
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Detect chart contract change
+        id: detect
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          if git diff --quiet FETCH_HEAD -- "$CHART_DIR" tools/check-pacman-*.sh .github/workflows/chart-ci.yml; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Report lifecycle no-op
+        if: steps.detect.outputs.changed != 'true'
+        run: |
+          echo "Chart unchanged; ${{ matrix.database }} lifecycle checks are not applicable."
+          echo "### ${{ matrix.database }} lifecycle skipped (chart unchanged)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Checkout frozen Pac-Man source
+        if: steps.detect.outputs.changed == 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: saintdle/pacman
+          ref: ${{ env.PACMAN_SOURCE_SHA }}
+          path: pacman-source
+          persist-credentials: false
+
+      - name: Set up Node.js
+        if: steps.detect.outputs.changed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Helm
+        if: steps.detect.outputs.changed == 'true'
+        uses: azure/setup-helm@v5
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Install Kind with checksum verification
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          KIND_VERSION: v0.30.0
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64) kind_arch=amd64 ;;
+            aarch64|arm64) kind_arch=arm64 ;;
+            *) echo "Unsupported runner architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+
+          temp_dir=$(mktemp -d)
+          trap 'rm -rf "$temp_dir"' EXIT
+          curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 \
+            -o "$temp_dir/kind-linux-${kind_arch}" \
+            "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-${kind_arch}"
+          curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 \
+            -o "$temp_dir/kind-linux-${kind_arch}.sha256sum" \
+            "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-${kind_arch}.sha256sum"
+          grep -F "kind-linux-${kind_arch}" "$temp_dir/kind-linux-${kind_arch}.sha256sum" \
+            | (cd "$temp_dir" && sha256sum -c --status)
+          sudo install -m 0755 "$temp_dir/kind-linux-${kind_arch}" /usr/local/bin/kind
+          kind version
+          kubectl version --client=true
+
+      - name: Run isolated chart install and upgrade checks
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          DATABASE: ${{ matrix.database }}
+        run: bash tools/check-pacman-lifecycle.sh "$CHART_DIR" pacman-source "$DATABASE"
