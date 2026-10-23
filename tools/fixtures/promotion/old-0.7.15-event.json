@@ -1,0 +1,8 @@
+{
+  "app_version": "0.7.15",
+  "image_digest": "sha256:bc887001ae81ce5692703704c356d718ae42514512e28d10c98690518f8547c4",
+  "app_record_ref": "https://github.com/saintdle/pacman/releases/download/pacman-v0.7.15/release-metadata.json",
+  "app_record_sha256": "bc887001ae81ce5692703704c356d718ae42514512e28d10c98690518f8547c4",
+  "app_record_format": "legacy-release-metadata-v0",
+  "app_record_missing_evidence": ["platform_descriptors", "provenance", "signature"]
+}
