@@ -50,7 +50,8 @@ export function resolveNextChartVersion(appVersionValue, currentChartVersionValu
   return formatVersion(candidate);
 }
 
-export function planChartPromotion({ appVersion, imageDigest, currentAppVersion, currentImageDigest, currentChartVersion, releasedTags }) {
+export function planChartPromotion({ appVersion, imageDigest, currentAppVersion, currentImageDigest, currentChartVersion, releasedTags,
+  appRecordReference, appRecordSha256, appSourceCommit, currentAppRecordReference, currentAppRecordSha256, currentAppSourceCommit }) {
   const app = parseVersion(appVersion, 'app version');
   const currentApp = parseVersion(currentAppVersion, 'current app version');
   const chart = parseVersion(currentChartVersion, 'current chart version');
@@ -62,6 +63,16 @@ export function planChartPromotion({ appVersion, imageDigest, currentAppVersion,
   if (appComparison === 0) {
     if (imageDigest !== currentImageDigest) {
       throw new Error('same app version has a conflicting image digest');
+    }
+    const identities = [
+      ['app record reference', appRecordReference, currentAppRecordReference],
+      ['app record checksum', appRecordSha256, currentAppRecordSha256],
+      ['app source commit', appSourceCommit, currentAppSourceCommit],
+    ];
+    for (const [name, candidate, current] of identities) {
+      if (candidate !== undefined || current !== undefined) {
+        if (!candidate || !current || candidate !== current) throw new Error(`same app version has a conflicting ${name}`);
+      }
     }
     return { promotion: 'noop', reason: 'already-promoted' };
   }
@@ -80,6 +91,12 @@ function main() {
     currentAppVersion: process.env.CURRENT_APP_VERSION,
     currentImageDigest: process.env.CURRENT_IMAGE_DIGEST,
     currentChartVersion: process.env.CURRENT_CHART_VERSION,
+    appRecordReference: process.env.APP_RECORD_REFERENCE,
+    appRecordSha256: process.env.APP_RECORD_SHA256,
+    appSourceCommit: process.env.APP_SOURCE_COMMIT,
+    currentAppRecordReference: process.env.CURRENT_APP_RECORD_REFERENCE,
+    currentAppRecordSha256: process.env.CURRENT_APP_RECORD_SHA256,
+    currentAppSourceCommit: process.env.CURRENT_APP_SOURCE_COMMIT,
     releasedTags: currentTags(),
   });
 

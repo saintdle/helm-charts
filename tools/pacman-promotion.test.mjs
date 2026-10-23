@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { planChartPromotion } from './resolve-pacman-chart-version.mjs';
-import { preservePendingPromotion, selectLatestAppRelease, validateAppRecordBytes } from './pacman-promotion.mjs';
+import { preservePendingPromotion, rollbackProposal, resumeRollbackProposal, selectLatestAppRelease, validateAppRecordBytes } from './pacman-promotion.mjs';
 
 const resolver = fileURLToPath(new URL('./resolve-pacman-chart-version.mjs', import.meta.url));
 const fixture = (path) => new URL(`./fixtures/${path}`, import.meta.url);
@@ -38,6 +38,35 @@ test('duplicate app event is a no-op', () => {
     currentChartVersion: '0.7.17',
     releasedTags: ['pacman-0.7.17'],
   }), { promotion: 'noop', reason: 'already-promoted' });
+});
+
+test('same app digest with a changed immutable record pin is rejected', () => {
+  assert.throws(() => planChartPromotion({
+    appVersion: '0.7.16',
+    imageDigest: 'sha256:592740129bce7530a347146b86647f8b516df3c19105aa4c2fe40b878840fccf',
+    currentAppVersion: '0.7.16',
+    currentImageDigest: 'sha256:592740129bce7530a347146b86647f8b516df3c19105aa4c2fe40b878840fccf',
+    appRecordReference: 'https://github.com/saintdle/pacman/releases/download/pacman-v0.7.16/app-release-record.json',
+    appRecordSha256: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    appSourceCommit: '13f04d6e6aea62f1d32d57d90e4eff786083c02e',
+    currentAppRecordReference: 'https://github.com/saintdle/pacman/releases/download/pacman-v0.7.16/app-release-record.json',
+    currentAppRecordSha256: 'ef15decce2fc0cb9aa0b14d4a2d059e10eb13638afc57fe99277b8688aea4c4e',
+    currentAppSourceCommit: '13f04d6e6aea62f1d32d57d90e4eff786083c02e',
+    currentChartVersion: '0.7.17',
+    releasedTags: ['pacman-0.7.17'],
+  }), /conflicting app record checksum/);
+});
+
+test('rollback dispatch produces a proposal only and resume requires that proposal state', () => {
+  const candidate = {
+    version: '0.7.15', reference: 'https://github.com/saintdle/pacman/releases/download/pacman-v0.7.15/release-metadata.json',
+    sha256: 'a'.repeat(64), image_manifest_list_digest: `sha256:${'b'.repeat(64)}`,
+  };
+  const rollback = rollbackProposal({ candidate, chartVersion: '0.7.18', reason: 'Restore verified prior app' });
+  assert.equal(rollback.action, 'rollback-proposal');
+  assert.equal('apply' in rollback, false);
+  assert.equal(resumeRollbackProposal({ state: { mode: 'rollback' }, candidate, chartVersion: '0.7.18' }).action, 'resume');
+  assert.throws(() => resumeRollbackProposal({ state: { mode: 'automatic' }, candidate, chartVersion: '0.7.18' }), /pending rollback/);
 });
 
 test('same app version with a different digest is an identity conflict', () => {

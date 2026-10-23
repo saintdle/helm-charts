@@ -75,6 +75,9 @@ jobs:
           pending_app_version=""
           pending_image_digest=""
           pending_chart_version=""
+          pending_app_reference=""
+          pending_app_sha256=""
+          pending_app_source_commit=""
           if git fetch --quiet origin +refs/heads/automation/pacman-promotion:refs/remotes/origin/automation/pacman-promotion 2>/dev/null; then
             pending_state=$(git show refs/remotes/origin/automation/pacman-promotion:pacman-promotion-state.json 2>/dev/null || true)
             pending_mode=$(jq -r '.mode // ""' <<< "$pending_state" 2>/dev/null || true)
@@ -86,12 +89,18 @@ jobs:
             pending_app_version=$(jq -r '.app.version // ""' <<< "$pending_state" 2>/dev/null || true)
             pending_image_digest=$(jq -r '.app.image_manifest_list_digest // ""' <<< "$pending_state" 2>/dev/null || true)
             pending_chart_version=$(jq -r '.chart.version // ""' <<< "$pending_state" 2>/dev/null || true)
+            pending_app_reference=$(jq -r '.app.reference // ""' <<< "$pending_state" 2>/dev/null || true)
+            pending_app_sha256=$(jq -r '.app.sha256 // ""' <<< "$pending_state" 2>/dev/null || true)
+            pending_app_source_commit=$(jq -r '.app.source_commit // ""' <<< "$pending_state" 2>/dev/null || true)
           fi
           {
             echo "action=continue"
             echo "app_version=$pending_app_version"
             echo "image_digest=$pending_image_digest"
             echo "chart_version=$pending_chart_version"
+            echo "app_reference=$pending_app_reference"
+            echo "app_sha256=$pending_app_sha256"
+            echo "app_source_commit=$pending_app_source_commit"
           } >> "$GITHUB_OUTPUT"
 
       - name: Verify authoritative app release and plan promotion
@@ -112,6 +121,9 @@ jobs:
           PENDING_APP_VERSION: ${{ steps.pending.outputs.app_version }}
           PENDING_IMAGE_DIGEST: ${{ steps.pending.outputs.image_digest }}
           PENDING_CHART_VERSION: ${{ steps.pending.outputs.chart_version }}
+          PENDING_APP_RECORD_REFERENCE: ${{ steps.pending.outputs.app_reference }}
+          PENDING_APP_RECORD_SHA256: ${{ steps.pending.outputs.app_sha256 }}
+          PENDING_APP_SOURCE_COMMIT: ${{ steps.pending.outputs.app_source_commit }}
         run: |
           set -euo pipefail
           node tools/pacman-promotion.mjs plan /tmp/pacman-promotion-plan.json

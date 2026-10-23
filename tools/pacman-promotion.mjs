@@ -142,7 +142,8 @@ export function selectLatestAppRelease(releases) {
   return candidates[0].release;
 }
 
-export function preservePendingPromotion({ pendingAppVersion, pendingImageDigest, candidateAppVersion, candidateImageDigest }) {
+export function preservePendingPromotion({ pendingAppVersion, pendingImageDigest, candidateAppVersion, candidateImageDigest,
+  pendingAppReference, pendingAppSha256, pendingAppSourceCommit, candidateAppReference, candidateAppSha256, candidateAppSourceCommit }) {
   requireVersion(pendingAppVersion, 'pending app version');
   requireVersion(candidateAppVersion, 'candidate app version');
   if (!digestPattern.test(pendingImageDigest ?? '') || !digestPattern.test(candidateImageDigest ?? '')) {
@@ -152,9 +153,32 @@ export function preservePendingPromotion({ pendingAppVersion, pendingImageDigest
   if (comparison > 0) return 'newer-pending-promotion';
   if (comparison === 0) {
     if (pendingImageDigest !== candidateImageDigest) fail('pending promotion conflicts with the verified app release identity');
+    const identities = [
+      ['app record reference', pendingAppReference, candidateAppReference],
+      ['app record checksum', pendingAppSha256, candidateAppSha256],
+      ['app source commit', pendingAppSourceCommit, candidateAppSourceCommit],
+    ];
+    for (const [name, pending, candidate] of identities) {
+      if (pending !== undefined || candidate !== undefined) {
+        if (!pending || !candidate || pending !== candidate) fail(`pending promotion conflicts with the verified ${name}`);
+      }
+    }
     return 'same-pending-promotion';
   }
   return null;
+}
+
+export function rollbackProposal({ candidate, chartVersion, reason }) {
+  if (!candidate?.reference || !checksumPattern.test(candidate.sha256 ?? '') || !digestPattern.test(candidate.image_manifest_list_digest ?? '')
+    || !versionPattern.test(chartVersion ?? '') || reason.trim().length < 8) {
+    fail('rollback proposal requires verified immutable app evidence, chart version, and a reason');
+  }
+  return { action: 'rollback-proposal', reason: 'explicit-rollback-proposal', rollback_reason: reason.trim(), app: candidate, chart: { version: chartVersion } };
+}
+
+export function resumeRollbackProposal({ state, candidate, chartVersion }) {
+  if (state?.mode !== 'rollback') fail('resume requires a pending rollback proposal');
+  return { action: 'resume', reason: 'explicit-resume-after-rollback', app: candidate, chart: { version: chartVersion } };
 }
 
 async function github(path) {
@@ -339,6 +363,12 @@ async function createPlan() {
       pendingImageDigest,
       candidateAppVersion: candidate.version,
       candidateImageDigest: candidate.image_manifest_list_digest,
+      pendingAppReference: process.env.PENDING_APP_RECORD_REFERENCE || undefined,
+      pendingAppSha256: process.env.PENDING_APP_RECORD_SHA256 || undefined,
+      pendingAppSourceCommit: process.env.PENDING_APP_SOURCE_COMMIT || undefined,
+      candidateAppReference: candidate.reference,
+      candidateAppSha256: candidate.sha256,
+      candidateAppSourceCommit: candidate.source_commit,
     });
     if (pendingDecision) return { action: 'noop', reason: pendingDecision };
   }
@@ -365,27 +395,23 @@ async function createPlan() {
       currentAppVersion: current.appVersion,
       currentImageDigest: current.imageDigest,
       currentChartVersion: chartVersionFloor,
+      appRecordReference: candidate.reference,
+      appRecordSha256: candidate.sha256,
+      appSourceCommit: candidate.source_commit,
+      currentAppRecordReference: state?.app?.reference,
+      currentAppRecordSha256: state?.app?.sha256,
+      currentAppSourceCommit: state?.app?.source_commit,
       releasedTags: process.env.RELEASED_CHART_TAGS?.split(',').filter(Boolean)
         ?? execFileSync('git', ['tag', '--list', 'pacman-*'], { encoding: 'utf8' }).trim().split('\n').filter(Boolean),
     });
   if (plan.promotion === 'noop') {
     if (mode === 'resume' && state?.mode === 'rollback') {
-      return {
-        action: 'resume',
-        reason: 'explicit-resume-after-rollback',
-        app: candidate,
-        chart: { version: current.chartVersion },
-      };
+      return resumeRollbackProposal({ state, candidate, chartVersion: current.chartVersion });
     }
     return { action: 'noop', reason: plan.reason };
   }
-  return {
-    action: mode === 'rollback' ? 'rollback-proposal' : 'promotion',
-    reason: plan.reason,
-    rollback_reason: reason,
-    app: candidate,
-    chart: { version: plan.chartVersion },
-  };
+  if (mode === 'rollback') return rollbackProposal({ candidate, chartVersion: plan.chartVersion, reason });
+  return { action: 'promotion', reason: plan.reason, app: candidate, chart: { version: plan.chartVersion } };
 }
 
 function writeState(plan, outputPath) {
