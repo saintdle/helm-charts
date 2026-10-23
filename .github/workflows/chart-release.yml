@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: chart-release
+  group: pacman-chart-publisher
   cancel-in-progress: false
 
 env:
@@ -21,12 +21,18 @@ env:
 jobs:
   release:
     name: release
+    if: vars.PACMAN_CHART_PUBLISHER_AUTHORITY != 'pacman'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout the triggering commit
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      - name: Confirm the legacy publisher still owns the chart
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN }}
+        run: node tools/chart-authority.mjs helm-charts
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

@@ -31,7 +31,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: pacman-chart-promotion
+  group: pacman-chart-publisher
   cancel-in-progress: false
 
 env:
@@ -40,12 +40,18 @@ env:
 jobs:
   promotion:
     name: Open one coherent chart promotion PR
+    if: vars.PACMAN_CHART_PUBLISHER_AUTHORITY != 'pacman'
     runs-on: ubuntu-latest
     steps:
       - name: Check out main
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      - name: Confirm the legacy source promoter still owns the chart
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN }}
+        run: node tools/chart-authority.mjs helm-charts
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

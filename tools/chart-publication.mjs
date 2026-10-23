@@ -159,14 +159,85 @@ function indexHasPackage(index, identity, packageChecksum) {
     && entry.urls.includes(identity.packageUrl);
 }
 
+function assertGeneratedSourceCandidate(identity, candidateValidation) {
+  if (identity.sourceRepository === identity.distributionRepository) return;
+  if (identity.sourceRepository !== 'saintdle/pacman'
+    || candidateValidation?.sourceRepository !== 'saintdle/pacman'
+    || candidateValidation?.sourceCommit !== identity.sourceCommit
+    || candidateValidation?.ref !== 'refs/heads/main'
+    || candidateValidation?.workflow !== 'chart-ci.yml'
+    || candidateValidation?.event !== 'push'
+    || candidateValidation?.conclusion !== 'success') {
+    fail('exact pacman source SHA validation must use chart-ci.yml on refs/heads/main and finish with success');
+  }
+}
+
+function validateGeneratedReleaseAssets(releaseAssets, identity, packageChecksum) {
+  if (!releaseAssets || typeof releaseAssets !== 'object') fail('generated publication requires a chart release record and compatibility lock');
+  const chartRecordBytes = Buffer.from(releaseAssets['chart-release-record.json'] ?? '');
+  const lockBytes = Buffer.from(releaseAssets['consumer-compatibility-lock.json'] ?? '');
+  let chartRecord;
+  let lock;
+  try {
+    chartRecord = JSON.parse(chartRecordBytes.toString('utf8'));
+    lock = JSON.parse(lockBytes.toString('utf8'));
+  } catch {
+    fail('generated release record and compatibility lock must be valid JSON');
+  }
+  const packageUrl = `https://github.com/${identity.distributionRepository}/releases/download/${identity.tag}/${identity.filename}`;
+  const recordUrl = `https://github.com/${identity.distributionRepository}/releases/download/${identity.tag}/chart-release-record.json`;
+  if (chartRecord.schema_version !== 1 || chartRecord.kind !== 'chart-release'
+    || chartRecord.chart_version !== identity.version
+    || chartRecord.source?.repository !== `https://github.com/${identity.sourceRepository}`
+    || chartRecord.source?.commit !== identity.sourceCommit
+    || chartRecord.package?.filename !== identity.filename
+    || chartRecord.package?.immutable_url !== packageUrl
+    || chartRecord.package?.sha256 !== packageChecksum) {
+    fail('generated chart-release record does not pin the exact source, version, immutable package URL, and checksum');
+  }
+  if (lock.schema_version !== 1 || lock.kind !== 'consumer-compatibility-lock'
+    || lock.chart?.version !== identity.version
+    || lock.chart?.reference !== recordUrl
+    || lock.chart?.sha256 !== sha256(chartRecordBytes)
+    || lock.chart?.package_reference !== packageUrl
+    || lock.chart?.package_sha256 !== packageChecksum
+    || lock.chart?.source_repository !== `https://github.com/${identity.sourceRepository}`
+    || lock.chart?.source_commit !== identity.sourceCommit) {
+    fail('generated compatibility lock does not pin the exact chart record, package, source, and version');
+  }
+  return {
+    'chart-release-record.json': chartRecordBytes,
+    'consumer-compatibility-lock.json': lockBytes,
+  };
+}
+
+async function ensureImmutableReleaseAsset(api, tag, filename, proposedBytes) {
+  let existing = await api.getReleaseAsset(tag, filename);
+  if (existing && !Buffer.from(existing).equals(proposedBytes)) fail(`release asset ${filename} already exists with different bytes`);
+  if (!existing) {
+    await api.uploadReleaseAsset(tag, filename, proposedBytes);
+    existing = await api.getReleaseAsset(tag, filename);
+  }
+  if (!existing || !Buffer.from(existing).equals(proposedBytes)) fail(`release asset ${filename} was not stored with the exact proposed bytes`);
+}
+
 async function checkpoint(api, stage) {
   await api.checkpoint?.(stage);
 }
 
-export async function publishChart({ identity: inputIdentity, api, publicAttempts = 5, retryDelayMs = 5000 }) {
+export async function publishChart({ identity: inputIdentity, api, candidateValidation, releaseAssets, publicAttempts = 5, retryDelayMs = 5000 }) {
   if (!api) fail('publication API is required');
   if (!Number.isInteger(publicAttempts) || publicAttempts < 1) fail('publicAttempts must be a positive integer');
   const identity = validateIdentity(inputIdentity);
+  assertGeneratedSourceCandidate(identity, candidateValidation);
+  let generatedAssets = null;
+  let generatedPackageBytes = null;
+  if (identity.sourceRepository !== identity.distributionRepository) {
+    if (typeof api.buildPackage !== 'function' || typeof api.inspectPackage !== 'function') fail('generated publication requires package validation');
+    generatedPackageBytes = Buffer.from(await api.buildPackage(identity));
+    verifyPackageMetadata(await api.inspectPackage(generatedPackageBytes), identity);
+    generatedAssets = validateGeneratedReleaseAssets(releaseAssets, identity, sha256(generatedPackageBytes));
+  }
 
   let tagCommit = await api.getTagCommit(identity.tag);
   if (tagCommit === null) {
@@ -181,8 +252,8 @@ export async function publishChart({ identity: inputIdentity, api, publicAttempt
   let packageBytes = null;
   let packageChecksum = null;
   if (!release && !asset) {
-    packageBytes = Buffer.from(await api.buildPackage(identity));
-    verifyPackageMetadata(await api.inspectPackage(packageBytes), identity);
+    packageBytes = generatedPackageBytes ?? Buffer.from(await api.buildPackage(identity));
+    if (!generatedPackageBytes) verifyPackageMetadata(await api.inspectPackage(packageBytes), identity);
     packageChecksum = sha256(packageBytes);
   }
   if (!release) {
@@ -199,8 +270,8 @@ export async function publishChart({ identity: inputIdentity, api, publicAttempt
 
   if (!asset) {
     if (!packageBytes) {
-      packageBytes = Buffer.from(await api.buildPackage(identity));
-      verifyPackageMetadata(await api.inspectPackage(packageBytes), identity);
+      packageBytes = generatedPackageBytes ?? Buffer.from(await api.buildPackage(identity));
+      if (!generatedPackageBytes) verifyPackageMetadata(await api.inspectPackage(packageBytes), identity);
       packageChecksum = sha256(packageBytes);
     }
     releaseEvidence(release, identity, packageChecksum, { allowDraft: true });
@@ -218,6 +289,13 @@ export async function publishChart({ identity: inputIdentity, api, publicAttempt
   }
   releaseEvidence(release, identity, assetChecksum);
   await checkpoint(api, 'asset');
+
+  if (generatedAssets) {
+    for (const [filename, bytes] of Object.entries(generatedAssets)) {
+      await ensureImmutableReleaseAsset(api, identity.tag, filename, bytes);
+    }
+    await checkpoint(api, 'records');
+  }
 
   let pages = await api.readPages(identity);
   if (pages.packageBytes && sha256(Buffer.from(pages.packageBytes)) !== assetChecksum) {
@@ -259,6 +337,15 @@ export async function publishChart({ identity: inputIdentity, api, publicAttempt
       chart_version: identity.version,
       image_digest: identity.imageDigest,
       source_commit: identity.sourceCommit,
+      ...(generatedAssets ? {
+        source_repository: `https://github.com/${identity.sourceRepository}`,
+        package_reference: `https://github.com/${identity.distributionRepository}/releases/download/${identity.tag}/${identity.filename}`,
+        package_sha256: assetChecksum,
+        chart_release_reference: `https://github.com/${identity.distributionRepository}/releases/download/${identity.tag}/chart-release-record.json`,
+        chart_release_sha256: sha256(generatedAssets['chart-release-record.json']),
+        compatibility_lock_reference: `https://github.com/${identity.distributionRepository}/releases/download/${identity.tag}/consumer-compatibility-lock.json`,
+        compatibility_lock_sha256: sha256(generatedAssets['consumer-compatibility-lock.json']),
+      } : {}),
     },
   };
   await api.dispatchNotification(payload);
