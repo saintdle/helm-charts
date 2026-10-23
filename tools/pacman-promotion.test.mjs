@@ -1,13 +1,32 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { planChartPromotion } from './resolve-pacman-chart-version.mjs';
 import { preservePendingPromotion, rollbackProposal, resumeRollbackProposal, selectLatestAppRelease, validateAppRecordBytes } from './pacman-promotion.mjs';
 
 const resolver = fileURLToPath(new URL('./resolve-pacman-chart-version.mjs', import.meta.url));
+const promotionCli = fileURLToPath(new URL('./pacman-promotion.mjs', import.meta.url));
 const fixture = (path) => new URL(`./fixtures/${path}`, import.meta.url);
+
+function filterPendingState(state, pullRequests, branchSha = 'a'.repeat(40), baseSha = 'd'.repeat(40)) {
+  const directory = mkdtempSync(join(tmpdir(), 'pacman-pending-test-'));
+  try {
+    const statePath = join(directory, 'state.json');
+    const proposalPath = join(directory, 'proposals.json');
+    const outputPath = join(directory, 'selected.json');
+    writeFileSync(statePath, JSON.stringify(state));
+    writeFileSync(proposalPath, JSON.stringify(pullRequests));
+    const result = spawnSync(process.execPath, [promotionCli, 'filter-pending', statePath, proposalPath], {
+      encoding: 'utf8', env: { ...process.env, PENDING_BRANCH_SHA: branchSha, PENDING_BASE_SHA: baseSha, PENDING_FILTERED_PATH: outputPath },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(readFileSync(outputPath, 'utf8'));
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}
 
 test('historical 0.7.15 release cannot allocate a newer chart over app 0.7.16', () => {
   const result = spawnSync(process.execPath, [resolver], {
@@ -115,6 +134,23 @@ test('delayed intermediate event cannot replace a newer coherent pending promoti
     }),
     'newer-pending-promotion',
   );
+});
+
+test('workflow pending filter accepts only the exact open proposal and keeps version ordering', () => {
+  const pending = { schema_version: 1, kind: 'pacman-chart-promotion-state', mode: 'automatic',
+    app: { version: '0.7.18', reference: 'app.json', sha256: 'b'.repeat(64), image_manifest_list_digest: `sha256:${'c'.repeat(64)}` },
+    chart: { version: '0.7.19' } };
+  const proposal = { state: 'OPEN', headRefName: 'automation/pacman-promotion', headRefOid: 'a'.repeat(40),
+    baseRefName: 'main', baseRefOid: 'd'.repeat(40) };
+  assert.deepEqual(filterPendingState(pending, [proposal]), pending);
+  assert.equal(preservePendingPromotion({ pendingAppVersion: pending.app.version, pendingImageDigest: pending.app.image_manifest_list_digest,
+    candidateAppVersion: '0.7.17', candidateImageDigest: `sha256:${'e'.repeat(64)}` }), 'newer-pending-promotion');
+  assert.equal(preservePendingPromotion({ pendingAppVersion: '0.7.16', pendingImageDigest: pending.app.image_manifest_list_digest,
+    candidateAppVersion: '0.7.18', candidateImageDigest: pending.app.image_manifest_list_digest }), null);
+  for (const proposalState of ['CLOSED', 'MERGED']) assert.equal(filterPendingState(pending, [{ ...proposal, state: proposalState }]), null);
+  assert.equal(filterPendingState(pending, []), null);
+  assert.equal(filterPendingState(pending, [{ ...proposal, headRefOid: 'e'.repeat(40) }]), null);
+  assert.equal(filterPendingState(pending, [{ ...proposal, baseRefOid: 'f'.repeat(40) }]), null);
 });
 
 test('schema-v1 app record and metadata must agree on checksum and identity', () => {

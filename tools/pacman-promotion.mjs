@@ -181,6 +181,19 @@ export function resumeRollbackProposal({ state, candidate, chartVersion }) {
   return { action: 'resume', reason: 'explicit-resume-after-rollback', app: candidate, chart: { version: chartVersion } };
 }
 
+export function selectPendingProposalState({ state, pullRequests, branchSha, baseSha, stateKind = 'pacman-chart-promotion-state' }) {
+  if (!isObject(state) || state.schema_version !== 1 || state.kind !== stateKind
+    || !['automatic', 'rollback'].includes(state.mode) || !Array.isArray(pullRequests)
+    || typeof state.app?.reference !== 'string'
+    || !digestPattern.test(state.app?.image_manifest_list_digest ?? '')
+    || !checksumPattern.test(state.app?.sha256 ?? '') || !versionPattern.test(state.app?.version ?? '')
+    || !versionPattern.test(state.chart?.version ?? '')) return null;
+  const matches = pullRequests.filter((proposal) => proposal?.state === 'OPEN'
+    && proposal.headRefName === 'automation/pacman-promotion' && proposal.headRefOid === branchSha
+    && proposal.baseRefName === 'main' && proposal.baseRefOid === baseSha);
+  return matches.length === 1 ? state : null;
+}
+
 async function github(path) {
   const response = await fetch(`https://api.github.com${path}`, {
     headers: {
@@ -441,6 +454,16 @@ function writeState(plan, outputPath) {
 
 async function main() {
   const [command, inputPath, outputPath] = process.argv.slice(2);
+  if (command === 'filter-pending') {
+    let state = null;
+    try { state = JSON.parse(readFileSync(inputPath, 'utf8')); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    const proposals = JSON.parse(readFileSync(outputPath, 'utf8'));
+    const selected = selectPendingProposalState({ state, pullRequests: proposals,
+      branchSha: process.env.PENDING_BRANCH_SHA, baseSha: process.env.PENDING_BASE_SHA });
+    writeFileSync(process.env.PENDING_FILTERED_PATH, `${JSON.stringify(selected, null, 2)}\n`);
+    return;
+  }
   if (command === 'plan') {
     const plan = await createPlan();
     writeFileSync(inputPath, `${JSON.stringify(plan, null, 2)}\n`);

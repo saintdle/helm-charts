@@ -70,6 +70,7 @@ jobs:
         id: pending
         env:
           PROMOTION_MODE: ${{ inputs.mode || 'reconcile' }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           pending_app_version=""
@@ -78,21 +79,32 @@ jobs:
           pending_app_reference=""
           pending_app_sha256=""
           pending_app_source_commit=""
+          branch_sha=""
+          printf 'null\n' > /tmp/pacman-branch-state.json
           if git fetch --quiet origin +refs/heads/automation/pacman-promotion:refs/remotes/origin/automation/pacman-promotion 2>/dev/null; then
-            pending_state=$(git show refs/remotes/origin/automation/pacman-promotion:pacman-promotion-state.json 2>/dev/null || true)
-            pending_mode=$(jq -r '.mode // ""' <<< "$pending_state" 2>/dev/null || true)
-            if [[ "$PROMOTION_MODE" == "reconcile" && "$pending_mode" == "rollback" ]]; then
-              echo "action=noop" >> "$GITHUB_OUTPUT"
-              echo "A rollback proposal is already pending; automatic reconciliation left it intact."
-              exit 0
+            if ! git show refs/remotes/origin/automation/pacman-promotion:pacman-promotion-state.json > /tmp/pacman-branch-state.json 2>/dev/null; then
+              printf 'null\n' > /tmp/pacman-branch-state.json
             fi
-            pending_app_version=$(jq -r '.app.version // ""' <<< "$pending_state" 2>/dev/null || true)
-            pending_image_digest=$(jq -r '.app.image_manifest_list_digest // ""' <<< "$pending_state" 2>/dev/null || true)
-            pending_chart_version=$(jq -r '.chart.version // ""' <<< "$pending_state" 2>/dev/null || true)
-            pending_app_reference=$(jq -r '.app.reference // ""' <<< "$pending_state" 2>/dev/null || true)
-            pending_app_sha256=$(jq -r '.app.sha256 // ""' <<< "$pending_state" 2>/dev/null || true)
-            pending_app_source_commit=$(jq -r '.app.source_commit // ""' <<< "$pending_state" 2>/dev/null || true)
+            branch_sha=$(git rev-parse refs/remotes/origin/automation/pacman-promotion)
           fi
+          gh pr list --repo saintdle/helm-charts --head saintdle:automation/pacman-promotion --base main --state all \
+            --json state,headRefName,headRefOid,baseRefName,baseRefOid > /tmp/pacman-promotion-prs.json
+          PENDING_BRANCH_SHA="$branch_sha" PENDING_BASE_SHA="$(git rev-parse HEAD)" \
+            PENDING_FILTERED_PATH=/tmp/pacman-pending-state.json \
+            node tools/pacman-promotion.mjs filter-pending /tmp/pacman-branch-state.json /tmp/pacman-promotion-prs.json
+          pending_state=$(cat /tmp/pacman-pending-state.json)
+          pending_mode=$(jq -r '.mode // ""' <<< "$pending_state" 2>/dev/null || true)
+          if [[ "$PROMOTION_MODE" == "reconcile" && "$pending_mode" == "rollback" ]]; then
+            echo "action=noop" >> "$GITHUB_OUTPUT"
+            echo "An open rollback proposal for the current branch and base is already pending; reconciliation left it intact."
+            exit 0
+          fi
+          pending_app_version=$(jq -r '.app.version // ""' <<< "$pending_state" 2>/dev/null || true)
+          pending_image_digest=$(jq -r '.app.image_manifest_list_digest // ""' <<< "$pending_state" 2>/dev/null || true)
+          pending_chart_version=$(jq -r '.chart.version // ""' <<< "$pending_state" 2>/dev/null || true)
+          pending_app_reference=$(jq -r '.app.reference // ""' <<< "$pending_state" 2>/dev/null || true)
+          pending_app_sha256=$(jq -r '.app.sha256 // ""' <<< "$pending_state" 2>/dev/null || true)
+          pending_app_source_commit=$(jq -r '.app.source_commit // ""' <<< "$pending_state" 2>/dev/null || true)
           {
             echo "action=continue"
             echo "app_version=$pending_app_version"
