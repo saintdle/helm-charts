@@ -38,11 +38,45 @@ function indexFor(currentIdentity, bytes) {
   };
 }
 
+function generatedReleaseAssets(currentIdentity, bytes = Buffer.from('exact-package-bytes')) {
+  const packageUrl = `https://github.com/${currentIdentity.distributionRepository}/releases/download/pacman-${currentIdentity.version}/${currentIdentity.name}-${currentIdentity.version}.tgz`;
+  const recordUrl = `https://github.com/${currentIdentity.distributionRepository}/releases/download/pacman-${currentIdentity.version}/chart-release-record.json`;
+  const chartRecord = {
+    schema_version: 1,
+    kind: 'chart-release',
+    chart_version: currentIdentity.version,
+    source: { repository: `https://github.com/${currentIdentity.sourceRepository}`, commit: currentIdentity.sourceCommit },
+    package: { filename: `${currentIdentity.name}-${currentIdentity.version}.tgz`, immutable_url: packageUrl, sha256: checksum(bytes) },
+    app_release: { reference: 'https://github.com/saintdle/pacman/releases/download/pacman-v0.7.18/app-release-record.json', sha256: 'd'.repeat(64) },
+  };
+  const chartRecordBytes = Buffer.from(`${JSON.stringify(chartRecord)}\n`);
+  const lock = {
+    schema_version: 1,
+    kind: 'consumer-compatibility-lock',
+    app: {},
+    chart: {
+      version: currentIdentity.version,
+      reference: recordUrl,
+      sha256: checksum(chartRecordBytes),
+      package_reference: packageUrl,
+      package_sha256: checksum(bytes),
+      source_repository: `https://github.com/${currentIdentity.sourceRepository}`,
+      source_commit: currentIdentity.sourceCommit,
+    },
+    supported_evidence_lanes: ['chart-package-sha256'],
+  };
+  return {
+    'chart-release-record.json': chartRecordBytes,
+    'consumer-compatibility-lock.json': Buffer.from(`${JSON.stringify(lock)}\n`),
+  };
+}
+
 class PublicationApi {
   constructor({ failAfter = null, packageMetadata = null } = {}) {
     this.tagCommit = null;
     this.release = null;
     this.assetBytes = null;
+    this.recordAssets = new Map();
     this.pages = { packageBytes: null, index: null };
     this.dispatches = [];
     this.failAfter = failAfter;
@@ -64,8 +98,16 @@ class PublicationApi {
     this.release.body = body;
     this.release.draft = false;
   }
-  async getReleaseAsset() { return this.assetBytes ? Buffer.from(this.assetBytes) : null; }
-  async uploadReleaseAsset(_tag, _filename, bytes) { this.calls.assetUpload += 1; this.assetBytes = Buffer.from(bytes); }
+  async getReleaseAsset(_tag, filename) {
+    if (filename.endsWith('.tgz')) return this.assetBytes ? Buffer.from(this.assetBytes) : null;
+    const bytes = this.recordAssets.get(filename);
+    return bytes ? Buffer.from(bytes) : null;
+  }
+  async uploadReleaseAsset(_tag, filename, bytes) {
+    this.calls.assetUpload += 1;
+    if (filename.endsWith('.tgz')) this.assetBytes = Buffer.from(bytes);
+    else this.recordAssets.set(filename, Buffer.from(bytes));
+  }
   async buildPackage() { this.calls.packageBuild += 1; return Buffer.from('exact-package-bytes'); }
   async inspectPackage(bytes) {
     if (bytes.toString() === 'invalid-package') return { name: 'pacman', version: '0.7.99', appVersion: '0.7.99', imageDigest: `sha256:${'c'.repeat(64)}` };
@@ -167,13 +209,61 @@ test('publication identity keeps source and distribution repositories independen
     sourceCommit: 'c'.repeat(40),
   };
   const api = new PublicationApi();
-  const result = await publishChart({ identity: generatedIdentity, api, retryDelayMs: 0 });
+  const result = await publishChart({
+    identity: generatedIdentity,
+    candidateValidation: {
+      sourceRepository: 'saintdle/pacman',
+      sourceCommit: generatedIdentity.sourceCommit,
+      ref: 'refs/heads/main',
+      workflow: 'chart-ci.yml',
+      event: 'push',
+      conclusion: 'success',
+    },
+    releaseAssets: generatedReleaseAssets(generatedIdentity),
+    api,
+    retryDelayMs: 0,
+  });
 
   assert.equal(api.tagCommit, generatedIdentity.distributionCommit);
   assert.match(api.release.body, new RegExp(`Source repository: https://github.com/${generatedIdentity.sourceRepository}`));
   assert.match(api.release.body, new RegExp(`Source commit: ${generatedIdentity.sourceCommit}`));
   assert.equal(result.sourceRepository, generatedIdentity.sourceRepository);
   assert.equal(api.dispatches[0].client_payload.source_commit, generatedIdentity.sourceCommit);
+  assert.deepEqual([...api.recordAssets.keys()].sort(), ['chart-release-record.json', 'consumer-compatibility-lock.json']);
+  assert.equal(api.calls.assetUpload, 3);
+  assert.equal(api.dispatches[0].client_payload.source_repository, 'https://github.com/saintdle/pacman');
+  assert.equal(api.dispatches[0].client_payload.package_sha256, checksum(api.assetBytes));
+  assert.equal(api.dispatches[0].client_payload.chart_release_sha256, checksum(api.recordAssets.get('chart-release-record.json')));
+  assert.equal(api.dispatches[0].client_payload.compatibility_lock_sha256, checksum(api.recordAssets.get('consumer-compatibility-lock.json')));
+});
+
+test('generated record assets are immutable and publication replay retains exact bytes', async () => {
+  const generatedIdentity = { ...identity, sourceRepository: 'saintdle/pacman', sourceCommit: 'c'.repeat(40) };
+  const candidateValidation = {
+    sourceRepository: 'saintdle/pacman', sourceCommit: generatedIdentity.sourceCommit,
+    ref: 'refs/heads/main', workflow: 'chart-ci.yml', event: 'push', conclusion: 'success',
+  };
+  const releaseAssets = generatedReleaseAssets(generatedIdentity);
+  const api = new PublicationApi();
+  await publishChart({ identity: generatedIdentity, candidateValidation, releaseAssets, api, retryDelayMs: 0 });
+  const originalPackage = Buffer.from(api.assetBytes);
+  const originalRecords = new Map([...api.recordAssets].map(([name, bytes]) => [name, Buffer.from(bytes)]));
+  await publishChart({ identity: generatedIdentity, candidateValidation, releaseAssets, api, retryDelayMs: 0 });
+
+  assert.deepEqual(api.assetBytes, originalPackage);
+  assert.deepEqual(api.recordAssets, originalRecords);
+  assert.equal(api.calls.assetUpload, 3);
+  assert.equal(api.calls.pagesPublish, 1);
+  assert.equal(api.dispatches.length, 2);
+  assert.deepEqual(api.dispatches[0], api.dispatches[1]);
+
+  const changedRecordAssets = {
+    ...releaseAssets,
+    'chart-release-record.json': Buffer.from('changed record bytes'),
+  };
+  await assert.rejects(publishChart({ identity: generatedIdentity, candidateValidation, releaseAssets: changedRecordAssets, api, retryDelayMs: 0 }), /generated release record/);
+  assert.equal(api.calls.pagesPublish, 1);
+  assert.equal(api.dispatches.length, 2);
 });
 
 test('tag bound to another distribution commit stops before release or notification', async () => {
@@ -225,6 +315,33 @@ test('public package and index are retried until both become available', async (
 
   assert.equal(api.calls.publicRead, 2);
   assert.equal(api.dispatches.length, 1);
+});
+
+test('generated package publication fails closed before effects when exact-SHA candidate validation is absent or mismatched', async () => {
+  const generatedIdentity = {
+    ...identity,
+    sourceRepository: 'saintdle/pacman',
+    sourceCommit: 'c'.repeat(40),
+  };
+  const invalidCandidates = [
+    undefined,
+    { sourceRepository: 'saintdle/pacman', sourceCommit: generatedIdentity.sourceCommit, workflow: 'chart-ci.yml', conclusion: 'failure' },
+    { sourceRepository: 'saintdle/pacman', sourceCommit: 'd'.repeat(40), workflow: 'chart-ci.yml', conclusion: 'success' },
+    { sourceRepository: 'saintdle/pacman', sourceCommit: generatedIdentity.sourceCommit, workflow: 'release.yml', conclusion: 'success' },
+  ];
+
+  for (const candidateValidation of invalidCandidates) {
+    const api = new PublicationApi();
+    await assert.rejects(
+      publishChart({ identity: generatedIdentity, candidateValidation, releaseAssets: generatedReleaseAssets(generatedIdentity), api, retryDelayMs: 0 }),
+      /exact pacman source SHA.*chart-ci\.yml.*success/i,
+    );
+    assert.deepEqual(api.calls, {
+      tagCreate: 0, releaseCreate: 0, releasePublish: 0, assetUpload: 0,
+      pagesPublish: 0, packageBuild: 0, publicRead: 0,
+    });
+    assert.equal(api.dispatches.length, 0);
+  }
 });
 
 test('new release metadata rejects a changed source or package checksum on retry', async () => {

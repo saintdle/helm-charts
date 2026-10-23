@@ -1,0 +1,66 @@
+name: Publish Pac-Man chart artifact
+
+on:
+  repository_dispatch:
+    types: [pacman-chart-artifact]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: pacman-chart-publisher
+  cancel-in-progress: false
+
+env:
+  PAGES_URL: https://saintdle.github.io/helm-charts
+  HELM_VERSION: v3.16.4
+
+jobs:
+  publish:
+    name: verify and publish generated chart
+    if: vars.PACMAN_CHART_PUBLISHER_AUTHORITY == 'pacman'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the distribution repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Confirm generated publisher authority
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN }}
+        run: node tools/chart-authority.mjs pacman
+
+      - name: Verify the exact Pac-Man main source candidate before checkout
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN }}
+        run: node tools/chart-artifact.mjs validate-candidate
+
+      - name: Check out only the authoritative release record codec
+        uses: actions/checkout@v5
+        with:
+          repository: saintdle/pacman
+          ref: ${{ github.event.client_payload.source_commit }}
+          path: pacman-codec
+          sparse-checkout: tools/release-records.js
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Publish immutable package, records, Pages index, and notification
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN }}
+          RELEASE_AUTOMATION_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN }}
+          PACMAN_RELEASE_RECORDS_CODEC: pacman-codec/tools/release-records.js
+        run: node tools/chart-artifact.mjs publish
