@@ -72,8 +72,21 @@ function releaseNotes(identity, packageChecksum) {
   ].join('\n');
 }
 
-function releaseEvidence(release, identity, packageChecksum) {
-  if (!release || release.tag_name !== identity.tag || release.draft || release.prerelease) {
+function draftReleaseNotes(identity) {
+  return [
+    `Pac-Man Helm chart **${identity.version}**.`,
+    '',
+    `Source repository: https://github.com/${identity.sourceRepository}`,
+    `Source commit: ${identity.sourceCommit}`,
+    `Distribution repository: https://github.com/${identity.distributionRepository}`,
+    `Distribution commit: ${identity.distributionCommit}`,
+    `Chart version: ${identity.version}`,
+    `Package: ${identity.filename}`,
+  ].join('\n');
+}
+
+function releaseEvidence(release, identity, packageChecksum, { allowDraft = false } = {}) {
+  if (!release || release.tag_name !== identity.tag || release.prerelease || (release.draft && !allowDraft)) {
     fail(`release ${identity.tag} is missing, unpublished, or bound to a different tag`);
   }
   const labels = [
@@ -85,6 +98,24 @@ function releaseEvidence(release, identity, packageChecksum) {
     return [label, line?.slice(label.length + 2)];
   }));
   const present = Object.values(found).filter((value) => value !== undefined).length;
+  if (release.draft) {
+    const identityLabels = labels.slice(0, -1);
+    if (present !== identityLabels.length || found['Package SHA-256'] !== undefined) {
+      fail(`draft release ${identity.tag} has incomplete or premature package metadata`);
+    }
+    const expected = {
+      'Source repository': `https://github.com/${identity.sourceRepository}`,
+      'Source commit': identity.sourceCommit,
+      'Distribution repository': `https://github.com/${identity.distributionRepository}`,
+      'Distribution commit': identity.distributionCommit,
+      'Chart version': identity.version,
+      Package: identity.filename,
+    };
+    for (const label of identityLabels) {
+      if (found[label] !== expected[label]) fail(`draft release ${identity.tag} ${label.toLowerCase()} does not match the immutable publication`);
+    }
+    return { format: 'pending-chart-publication-v1', missingEvidence: ['package-sha256', 'published-release'] };
+  }
   if (present === 0) {
     if (identity.sourceRepository !== identity.distributionRepository
       || identity.sourceCommit !== identity.distributionCommit) {
@@ -146,30 +177,33 @@ export async function publishChart({ identity: inputIdentity, api, publicAttempt
   await checkpoint(api, 'tag');
 
   let release = await api.getRelease(identity.tag);
+  let asset = release ? await api.getReleaseAsset(identity.tag, identity.filename) : null;
   let packageBytes = null;
   let packageChecksum = null;
-  if (!release) {
+  if (!release && !asset) {
     packageBytes = Buffer.from(await api.buildPackage(identity));
     verifyPackageMetadata(await api.inspectPackage(packageBytes), identity);
     packageChecksum = sha256(packageBytes);
+  }
+  if (!release) {
     release = await api.createRelease(identity.tag, {
       title: `pacman ${identity.version}`,
-      body: releaseNotes(identity, packageChecksum),
+      body: draftReleaseNotes(identity),
       distributionCommit: identity.distributionCommit,
+      draft: true,
     });
     if (!release) release = await api.getRelease(identity.tag);
   }
-  releaseEvidence(release, identity, packageChecksum);
+  releaseEvidence(release, identity, packageChecksum, { allowDraft: true });
   await checkpoint(api, 'release');
 
-  let asset = await api.getReleaseAsset(identity.tag, identity.filename);
   if (!asset) {
     if (!packageBytes) {
       packageBytes = Buffer.from(await api.buildPackage(identity));
       verifyPackageMetadata(await api.inspectPackage(packageBytes), identity);
       packageChecksum = sha256(packageBytes);
     }
-    releaseEvidence(release, identity, packageChecksum);
+    releaseEvidence(release, identity, packageChecksum, { allowDraft: true });
     await api.uploadReleaseAsset(identity.tag, identity.filename, packageBytes);
     asset = await api.getReleaseAsset(identity.tag, identity.filename);
   }
@@ -178,6 +212,10 @@ export async function publishChart({ identity: inputIdentity, api, publicAttempt
   const assetChecksum = sha256(exactPackageBytes);
   if (packageBytes && assetChecksum !== sha256(packageBytes)) fail(`release asset ${identity.filename} changed during upload`);
   verifyPackageMetadata(await api.inspectPackage(exactPackageBytes), identity);
+  if (release.draft) {
+    await api.publishRelease(identity.tag, releaseNotes(identity, assetChecksum));
+    release = await api.getRelease(identity.tag);
+  }
   releaseEvidence(release, identity, assetChecksum);
   await checkpoint(api, 'asset');
 
@@ -253,15 +291,20 @@ function gitFile(ref, filename) {
   }
 }
 
-function createLiveAdapter(identity) {
-  const token = process.env.GH_TOKEN;
-  const dispatchToken = process.env.RELEASE_AUTOMATION_TOKEN;
+export function createLiveAdapter(inputIdentity, dependencies = {}) {
+  const identity = validateIdentity(inputIdentity);
+  const command = dependencies.run ?? run;
+  const readGitFile = dependencies.readGitFile ?? gitFile;
+  const parseDocument = dependencies.parseYaml ?? parseYaml;
+  const fetchRequest = dependencies.fetch ?? fetch;
+  const token = dependencies.token ?? process.env.GH_TOKEN;
+  const dispatchToken = dependencies.dispatchToken ?? process.env.RELEASE_AUTOMATION_TOKEN;
   const repo = identity.distributionRepository;
   if (!token) fail('GH_TOKEN is required to repair the GitHub release');
   if (!dispatchToken) fail('RELEASE_AUTOMATION_TOKEN is required to notify pacman-for-k8s');
 
   async function request(url, { allowNotFound = false, ...options } = {}) {
-    const response = await fetch(url, {
+    const response = await fetchRequest(url, {
       ...options,
       headers: {
         Accept: 'application/vnd.github+json',
@@ -288,14 +331,14 @@ function createLiveAdapter(identity) {
     const path = join(directory, 'package.tgz');
     try {
       writeFileSync(path, bytes);
-      const chart = parseYaml(run('helm', ['show', 'chart', path]));
-      const values = parseYaml(run('helm', ['show', 'values', path]));
+      const chart = parseDocument(command('helm', ['show', 'chart', path]));
+      const values = parseDocument(command('helm', ['show', 'values', path]));
       return { name: chart.name, version: chart.version, appVersion: String(chart.appVersion), imageDigest: values.image?.digest };
     } finally { rmSync(directory, { recursive: true, force: true }); }
   }
 
   async function fetchPublic(url) {
-    const response = await fetch(url, {
+    const response = await fetchRequest(url, {
       cache: 'no-store',
       signal: AbortSignal.timeout(10000),
       headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
@@ -306,7 +349,7 @@ function createLiveAdapter(identity) {
 
   return {
     async getTagCommit(tag) {
-      const output = run('git', ['ls-remote', '--tags', 'origin', `refs/tags/${tag}`, `refs/tags/${tag}^{}`]);
+      const output = command('git', ['ls-remote', '--tags', 'origin', `refs/tags/${tag}`, `refs/tags/${tag}^{}`]);
       const refs = new Map(output.split('\n').filter(Boolean).map((line) => {
         const [sha, ref] = line.split(/\s+/);
         return [ref, sha];
@@ -315,11 +358,11 @@ function createLiveAdapter(identity) {
     },
     async createTag(tag, commit) {
       let localCommit = null;
-      try { localCommit = run('git', ['rev-parse', '--verify', `refs/tags/${tag}^{}`]); }
+      try { localCommit = command('git', ['rev-parse', '--verify', `refs/tags/${tag}^{}`]); }
       catch (error) { if (error.status !== 128) throw error; }
       if (localCommit && localCommit !== commit) fail(`local tag ${tag} already points at a different commit`);
-      if (!localCommit) run('git', ['tag', tag, commit]);
-      try { run('git', ['push', 'origin', `refs/tags/${tag}`]); }
+      if (!localCommit) command('git', ['tag', tag, commit]);
+      try { command('git', ['push', 'origin', `refs/tags/${tag}`]); }
       catch (error) {
         if (await this.getTagCommit(tag) !== commit) throw error;
       }
@@ -331,7 +374,7 @@ function createLiveAdapter(identity) {
         target_commitish: details.distributionCommit,
         name: details.title,
         body: details.body,
-        draft: false,
+        draft: details.draft ?? false,
         prerelease: false,
       };
       try { return await request(`${apiBase}/repos/${repo}/releases`, { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } }); }
@@ -340,6 +383,15 @@ function createLiveAdapter(identity) {
         if (existing) return existing;
         throw error;
       }
+    },
+    async publishRelease(tag, body) {
+      const release = await getRelease(tag);
+      if (!release) fail(`draft release ${tag} disappeared before publication`);
+      await request(`${apiBase}/repos/${repo}/releases/${release.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ draft: false, body }),
+        headers: { 'Content-Type': 'application/json' },
+      });
     },
     async getReleaseAsset(tag, filename) {
       const release = await getRelease(tag);
@@ -362,7 +414,7 @@ function createLiveAdapter(identity) {
       }
     },
     async buildPackage(currentIdentity) {
-      const head = run('git', ['rev-parse', 'HEAD']);
+      const head = command('git', ['rev-parse', 'HEAD']);
       if (head !== currentIdentity.distributionCommit) fail('checkout is not the exact distribution commit requested for this publication');
       if (currentIdentity.sourceRepository !== currentIdentity.distributionRepository
         || currentIdentity.sourceCommit !== currentIdentity.distributionCommit) {
@@ -370,27 +422,27 @@ function createLiveAdapter(identity) {
       }
       const directory = mkdtempSync(join(tmpdir(), 'pacman-chart-package-'));
       try {
-        run('helm', ['package', `charts/${currentIdentity.name}`, '-d', directory]);
+        command('helm', ['package', `charts/${currentIdentity.name}`, '-d', directory]);
         return readFileSync(join(directory, currentIdentity.filename));
       } finally { rmSync(directory, { recursive: true, force: true }); }
     },
     inspectPackage,
     async readPages() {
-      run('git', ['fetch', '--no-tags', 'origin', 'refs/heads/gh-pages:refs/remotes/origin/gh-pages']);
+      command('git', ['fetch', '--no-tags', 'origin', 'refs/heads/gh-pages:refs/remotes/origin/gh-pages']);
       const ref = 'refs/remotes/origin/gh-pages';
-      const indexBytes = gitFile(ref, 'index.yaml');
-      const packageBytes = gitFile(ref, identity.filename);
+      const indexBytes = readGitFile(ref, 'index.yaml');
+      const packageBytes = readGitFile(ref, identity.filename);
       return {
-        index: indexBytes ? parseYaml(indexBytes.toString('utf8')) : null,
+        index: indexBytes ? parseDocument(indexBytes.toString('utf8')) : null,
         packageBytes,
       };
     },
     async publishPages({ identity: currentIdentity, packageBytes }) {
-      run('git', ['fetch', '--no-tags', 'origin', 'refs/heads/gh-pages:refs/remotes/origin/gh-pages']);
+      command('git', ['fetch', '--no-tags', 'origin', 'refs/heads/gh-pages:refs/remotes/origin/gh-pages']);
       const parent = mkdtempSync(join(tmpdir(), 'pacman-gh-pages-'));
       const directory = join(parent, 'checkout');
       try {
-        run('git', ['worktree', 'add', '--detach', directory, 'refs/remotes/origin/gh-pages']);
+        command('git', ['worktree', 'add', '--detach', directory, 'refs/remotes/origin/gh-pages']);
         const target = join(directory, currentIdentity.filename);
         try {
           const previous = readFileSync(target);
@@ -399,17 +451,17 @@ function createLiveAdapter(identity) {
           if (error.code !== 'ENOENT') throw error;
           writeFileSync(target, packageBytes);
         }
-        run('helm', ['repo', 'index', directory, '--url', currentIdentity.pagesUrl, '--merge', join(directory, 'index.yaml')]);
-        run('git', ['-C', directory, 'config', 'user.name', 'github-actions[bot]']);
-        run('git', ['-C', directory, 'config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com']);
-        run('git', ['-C', directory, 'add', currentIdentity.filename, 'index.yaml']);
-        if (run('git', ['-C', directory, 'status', '--porcelain'])) {
-          run('git', ['-C', directory, 'commit', '-m', `Publish pacman ${currentIdentity.version} [skip ci]`]);
-          run('git', ['-C', directory, 'push', 'origin', 'HEAD:refs/heads/gh-pages']);
+        command('helm', ['repo', 'index', directory, '--url', currentIdentity.pagesUrl, '--merge', join(directory, 'index.yaml')]);
+        command('git', ['-C', directory, 'config', 'user.name', 'github-actions[bot]']);
+        command('git', ['-C', directory, 'config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com']);
+        command('git', ['-C', directory, 'add', currentIdentity.filename, 'index.yaml']);
+        if (command('git', ['-C', directory, 'status', '--porcelain'])) {
+          command('git', ['-C', directory, 'commit', '-m', `Publish pacman ${currentIdentity.version} [skip ci]`]);
+          command('git', ['-C', directory, 'push', 'origin', 'HEAD:refs/heads/gh-pages']);
         }
       } finally {
         rmSync(parent, { recursive: true, force: true });
-        try { run('git', ['worktree', 'prune']); } catch { /* The action workspace is disposable. */ }
+        try { command('git', ['worktree', 'prune']); } catch { /* The action workspace is disposable. */ }
       }
     },
     async readPublicPublication(currentIdentity) {
@@ -421,7 +473,7 @@ function createLiveAdapter(identity) {
     },
     sleep: (duration) => new Promise((resolvePromise) => setTimeout(resolvePromise, duration)),
     async dispatchNotification(payload) {
-      const response = await fetch(`${apiBase}/repos/saintdle/pacman-for-k8s/dispatches`, {
+      const response = await fetchRequest(`${apiBase}/repos/saintdle/pacman-for-k8s/dispatches`, {
         method: 'POST',
         headers: {
           Accept: 'application/vnd.github+json',
@@ -436,6 +488,12 @@ function createLiveAdapter(identity) {
   };
 }
 
+export function createPublicationRuntime(inputIdentity, adapterDependencies = {}) {
+  const identity = validateIdentity(inputIdentity);
+  const api = createLiveAdapter(identity, adapterDependencies);
+  return { identity, api };
+}
+
 async function main() {
   const identity = {
     name: process.env.CHART_NAME,
@@ -448,7 +506,8 @@ async function main() {
     distributionCommit: process.env.GITHUB_SHA,
     pagesUrl: process.env.PAGES_URL,
   };
-  const result = await publishChart({ identity, api: createLiveAdapter(identity) });
+  const { identity: normalizedIdentity, api } = createPublicationRuntime(identity);
+  const result = await publishChart({ identity: normalizedIdentity, api });
   console.log(`published ${result.tag} ${result.package} sha256:${result.packageSha256} (${result.releaseFormat})`);
 }
 

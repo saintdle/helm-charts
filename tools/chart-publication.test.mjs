@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { publishChart } from './chart-publication.mjs';
+import { createPublicationRuntime, publishChart } from './chart-publication.mjs';
 
 const identity = {
   name: 'pacman',
@@ -44,7 +48,7 @@ class PublicationApi {
     this.failAfter = failAfter;
     this.failedOnce = false;
     this.packageMetadata = packageMetadata;
-    this.calls = { tagCreate: 0, releaseCreate: 0, assetUpload: 0, pagesPublish: 0, packageBuild: 0, publicRead: 0 };
+    this.calls = { tagCreate: 0, releaseCreate: 0, releasePublish: 0, assetUpload: 0, pagesPublish: 0, packageBuild: 0, publicRead: 0 };
   }
 
   async getTagCommit() { return this.tagCommit; }
@@ -52,8 +56,13 @@ class PublicationApi {
   async getRelease() { return this.release ? structuredClone(this.release) : null; }
   async createRelease(tag, details) {
     this.calls.releaseCreate += 1;
-    this.release = { id: 1, tag_name: tag, draft: false, prerelease: false, body: details.body };
+    this.release = { id: 1, tag_name: tag, draft: details.draft ?? false, prerelease: false, body: details.body };
     return structuredClone(this.release);
+  }
+  async publishRelease(_tag, body) {
+    this.calls.releasePublish += 1;
+    this.release.body = body;
+    this.release.draft = false;
   }
   async getReleaseAsset() { return this.assetBytes ? Buffer.from(this.assetBytes) : null; }
   async uploadReleaseAsset(_tag, _filename, bytes) { this.calls.assetUpload += 1; this.assetBytes = Buffer.from(bytes); }
@@ -236,4 +245,100 @@ test('workflow calls the tested production helper instead of a separate publicat
   assert.match(workflow, /run: node tools\/chart-publication\.mjs/);
   assert.doesNotMatch(workflow, /steps\.guard\.outputs\.already/);
   assert.doesNotMatch(workflow, /gh release create|gh release upload|api\.github\.com\/repos\/saintdle\/pacman-for-k8s\/dispatches/);
+});
+
+test('production runtime normalizes identity before the adapter reads Pages files', async () => {
+  const requestedFiles = [];
+  const inputIdentity = { ...identity, filename: 'wrong.tgz', tag: 'wrong-tag' };
+  const { identity: normalized, api } = createPublicationRuntime(inputIdentity, {
+    token: 'stub-token',
+    dispatchToken: 'stub-dispatch-token',
+    run(command, args) {
+      assert.deepEqual([command, ...args], ['git', 'fetch', '--no-tags', 'origin', 'refs/heads/gh-pages:refs/remotes/origin/gh-pages']);
+      return '';
+    },
+    readGitFile(_ref, filename) {
+      requestedFiles.push(filename);
+      return filename === 'index.yaml' ? Buffer.from('index fixture') : Buffer.from('package fixture');
+    },
+    parseYaml(text) {
+      assert.equal(text, 'index fixture');
+      return { entries: {} };
+    },
+    fetch: async () => { throw new Error('unexpected network request in read-only adapter test'); },
+  });
+
+  const pages = await api.readPages();
+
+  assert.equal(normalized.filename, 'pacman-0.7.18.tgz');
+  assert.equal(normalized.tag, 'pacman-0.7.18');
+  assert.deepEqual(requestedFiles, ['index.yaml', normalized.filename]);
+  assert.equal(pages.packageBytes.toString(), 'package fixture');
+  assert.deepEqual(pages.index, { entries: {} });
+});
+
+test('delayed retry after draft release creation seals the exact pinned Helm package bytes', async () => {
+  const helm = process.env.PACMAN_TEST_HELM ?? 'helm';
+  const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
+  const chartYaml = readFileSync(join(root, 'charts/pacman/Chart.yaml'), 'utf8');
+  const valuesYaml = readFileSync(join(root, 'charts/pacman/values.yaml'), 'utf8');
+  const version = chartYaml.match(/^version:\s*(\S+)/m)?.[1];
+  const appVersion = chartYaml.match(/^appVersion:\s*["']?(\S+?)["']?\s*$/m)?.[1];
+  const imageDigest = valuesYaml.match(/^\s+digest:\s*["']?(sha256:[a-f0-9]{64})["']?\s*$/m)?.[1];
+  assert.ok(version && appVersion && imageDigest, 'chart metadata required for the real Helm package fixture');
+  const distributionCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+  const realIdentity = {
+    ...identity,
+    version,
+    appVersion,
+    imageDigest,
+    sourceCommit: distributionCommit,
+    distributionCommit,
+  };
+  const runRealHelm = (command, args, options = {}) => {
+    if (command === 'git' && args[0] === 'rev-parse') return distributionCommit;
+    if (command === 'helm') return execFileSync(helm, args, { cwd: root, encoding: 'utf8', ...options }).trim();
+    throw new Error(`unexpected local adapter command: ${command} ${args.join(' ')}`);
+  };
+  const parseHelmYaml = (text) => {
+    if (/^name:\s*pacman\s*$/m.test(text)) {
+      return {
+        name: text.match(/^name:\s*(\S+)/m)?.[1],
+        version: text.match(/^version:\s*(\S+)/m)?.[1],
+        appVersion: text.match(/^appVersion:\s*["']?(\S+?)["']?\s*$/m)?.[1],
+      };
+    }
+    return { image: { digest: text.match(/^\s+digest:\s*["']?(sha256:[a-f0-9]{64})["']?\s*$/m)?.[1] } };
+  };
+  const builder = createPublicationRuntime(realIdentity, {
+    token: 'stub-token',
+    dispatchToken: 'stub-dispatch-token',
+    run: runRealHelm,
+    parseYaml: parseHelmYaml,
+  }).api;
+  const api = new PublicationApi({ failAfter: 'release' });
+  const builtPackageHashes = [];
+  api.buildPackage = async (currentIdentity) => {
+    api.calls.packageBuild += 1;
+    const bytes = await builder.buildPackage(currentIdentity);
+    builtPackageHashes.push(checksum(bytes));
+    return bytes;
+  };
+  api.inspectPackage = builder.inspectPackage.bind(builder);
+
+  await assert.rejects(publishChart({ identity: realIdentity, api, retryDelayMs: 0 }), /injected failure after release/);
+  assert.equal(api.release.draft, true);
+  assert.equal(api.assetBytes, null);
+  assert.equal(api.dispatches.length, 0);
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 2100));
+  await publishChart({ identity: realIdentity, api, retryDelayMs: 0 });
+
+  assert.equal(api.release.draft, false);
+  assert.equal(api.calls.packageBuild, 2);
+  assert.notEqual(builtPackageHashes[0], builtPackageHashes[1], 'Helm 3.16.4 archive bytes should change across the delayed rebuild');
+  assert.equal(api.calls.assetUpload, 1);
+  assert.equal(api.calls.releasePublish, 1);
+  assert.equal(api.release.body.includes(`Package SHA-256: ${checksum(api.assetBytes)}`), true);
+  assert.deepEqual(api.pages.packageBytes, api.assetBytes);
+  assert.equal(api.dispatches.length, 1);
 });
