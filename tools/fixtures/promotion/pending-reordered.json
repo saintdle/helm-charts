@@ -1,0 +1,16 @@
+{
+  "main": {
+    "app_version": "0.7.16",
+    "image_digest": "sha256:592740129bce7530a347146b86647f8b516df3c19105aa4c2fe40b878840fccf",
+    "chart_version": "0.7.17"
+  },
+  "pending": {
+    "app_version": "0.7.18",
+    "image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "chart_version": "0.7.19"
+  },
+  "delayed_event": {
+    "app_version": "0.7.17",
+    "image_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+}

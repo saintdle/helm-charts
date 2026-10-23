@@ -1,0 +1,8 @@
+{
+  "version": "1.3.0",
+  "tag": "pacman-v1.3.0",
+  "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "image_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "app_record_ref": "https://github.com/saintdle/pacman/releases/download/pacman-v1.3.0/app-release-record.json",
+  "app_record_sha256": "5e8c313be3fca5718168b8a2ad669bd56d49935d2d4f54c4315561124777db79"
+}

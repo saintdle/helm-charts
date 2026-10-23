@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process';
 
-const versionPattern = /^(\d+)\.(\d+)\.(\d+)$/;
+const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const digestPattern = /^sha256:[0-9a-f]{64}$/;
 
 function parseVersion(value, source) {
-  const match = versionPattern.exec(value);
-  if (!match) throw new Error(`${source} must use MAJOR.MINOR.PATCH format: ${value}`);
+  const match = typeof value === 'string' ? versionPattern.exec(value) : null;
+  if (!match) throw new Error(`${source} must use canonical MAJOR.MINOR.PATCH format: ${value}`);
   return match.slice(1).map(Number);
 }
 
@@ -23,22 +24,95 @@ function patchVersion(version) {
   return [version[0], version[1], version[2] + 1];
 }
 
-function git(...argumentsList) {
-  return execFileSync('git', argumentsList, { encoding: 'utf8' }).trim();
-}
-
-const appVersion = parseVersion(process.env.APP_VERSION, 'app version');
-const currentChartVersion = parseVersion(process.env.CURRENT_CHART_VERSION, 'current chart version');
-const releasedTags = new Set(
-  git('tag', '--list', 'pacman-*')
+function currentTags() {
+  if (process.env.RELEASED_CHART_TAGS !== undefined) {
+    return process.env.RELEASED_CHART_TAGS.split(',').filter(Boolean);
+  }
+  return execFileSync('git', ['tag', '--list', 'pacman-*'], { encoding: 'utf8' })
     .split('\n')
-    .filter(Boolean),
-);
-
-let candidate = compareVersions(appVersion, currentChartVersion) > 0 ? appVersion : currentChartVersion;
-while (releasedTags.has(`pacman-${formatVersion(candidate)}`)) {
-  candidate = patchVersion(candidate);
+    .filter(Boolean);
 }
 
-console.log(`chart_version=${formatVersion(candidate)}`);
-console.log(`chart_source=${formatVersion(candidate) === formatVersion(appVersion) ? 'synchronized with app version' : 'next unused chart patch'}`);
+export function resolveNextChartVersion(appVersionValue, currentChartVersionValue, releasedTags) {
+  const appVersion = parseVersion(appVersionValue, 'app version');
+  const currentChartVersion = parseVersion(currentChartVersionValue, 'current chart version');
+  let candidate = compareVersions(appVersion, currentChartVersion) > 0
+    ? appVersion
+    : patchVersion(currentChartVersion);
+
+  while (releasedTags.includes(`pacman-${formatVersion(candidate)}`)) {
+    candidate = patchVersion(candidate);
+  }
+
+  if (compareVersions(candidate, currentChartVersion) <= 0) {
+    throw new Error('resolved chart version must be newer than the current chart version');
+  }
+  return formatVersion(candidate);
+}
+
+export function planChartPromotion({ appVersion, imageDigest, currentAppVersion, currentImageDigest, currentChartVersion, releasedTags,
+  appRecordReference, appRecordSha256, appSourceCommit, currentAppRecordReference, currentAppRecordSha256, currentAppSourceCommit }) {
+  const app = parseVersion(appVersion, 'app version');
+  const currentApp = parseVersion(currentAppVersion, 'current app version');
+  const chart = parseVersion(currentChartVersion, 'current chart version');
+  if (!digestPattern.test(imageDigest ?? '')) throw new Error('image digest must be a SHA-256 digest');
+  if (!digestPattern.test(currentImageDigest ?? '')) throw new Error('current image digest must be a SHA-256 digest');
+
+  const appComparison = compareVersions(app, currentApp);
+  if (appComparison < 0) return { promotion: 'noop', reason: 'older-app-release' };
+  if (appComparison === 0) {
+    if (imageDigest !== currentImageDigest) {
+      throw new Error('same app version has a conflicting image digest');
+    }
+    const identities = [
+      ['app record reference', appRecordReference, currentAppRecordReference],
+      ['app record checksum', appRecordSha256, currentAppRecordSha256],
+      ['app source commit', appSourceCommit, currentAppSourceCommit],
+    ];
+    for (const [name, candidate, current] of identities) {
+      if (candidate !== undefined || current !== undefined) {
+        if (!candidate || !current || candidate !== current) throw new Error(`same app version has a conflicting ${name}`);
+      }
+    }
+    return { promotion: 'noop', reason: 'already-promoted' };
+  }
+
+  return {
+    promotion: 'update',
+    reason: 'newer-app-release',
+    chartVersion: resolveNextChartVersion(appVersion, currentChartVersion, releasedTags),
+  };
+}
+
+function main() {
+  const plan = planChartPromotion({
+    appVersion: process.env.APP_VERSION,
+    imageDigest: process.env.IMAGE_DIGEST,
+    currentAppVersion: process.env.CURRENT_APP_VERSION,
+    currentImageDigest: process.env.CURRENT_IMAGE_DIGEST,
+    currentChartVersion: process.env.CURRENT_CHART_VERSION,
+    appRecordReference: process.env.APP_RECORD_REFERENCE,
+    appRecordSha256: process.env.APP_RECORD_SHA256,
+    appSourceCommit: process.env.APP_SOURCE_COMMIT,
+    currentAppRecordReference: process.env.CURRENT_APP_RECORD_REFERENCE,
+    currentAppRecordSha256: process.env.CURRENT_APP_RECORD_SHA256,
+    currentAppSourceCommit: process.env.CURRENT_APP_SOURCE_COMMIT,
+    releasedTags: currentTags(),
+  });
+
+  console.log(`promotion=${plan.promotion}`);
+  console.log(`reason=${plan.reason}`);
+  if (plan.chartVersion) {
+    console.log(`chart_version=${plan.chartVersion}`);
+    console.log('chart_source=next unused chart version');
+  }
+}
+
+if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
+  try {
+    main();
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = 1;
+  }
+}
