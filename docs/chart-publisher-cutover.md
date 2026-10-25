@@ -65,10 +65,14 @@ accepts `source_commit` only for a full Pac-Man `main` SHA with a successful
 `chart-ci.yml` push run. The receiver
 [`chart-artifact-publish.yml`](../.github/workflows/chart-artifact-publish.yml)
 verifies the exact package and immutable release identity before publishing.
-Both publication workflows share the non-cancelling
+The two publication workflows in `saintdle/helm-charts`,
+`chart-release.yml` and `chart-artifact-publish.yml`, share the non-cancelling
 `pacman-chart-publisher` concurrency group and recheck authority when a job
-starts; queued work must be drained or shown to exit before publication effects
-under stale authority.
+starts. Pac-Man's `chart-artifact-source.yml` uses the same group name in a
+different repository; GitHub concurrency groups are repository-scoped, so that
+name does not coordinate source and distribution jobs. Drain both repositories'
+runs and queues separately before changing authority; queued work must exit
+before publication effects under stale authority.
 
 Verify the exact source SHA, package and sidecar checksums, app/chart records
 and compatibility lock, release assets, Pages package and updated `index.yaml`,
