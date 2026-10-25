@@ -6,8 +6,10 @@ served via GitHub Pages at <https://saintdle.github.io/helm-charts>.
 This repository owns the public chart distribution and its historical Pages
 index. `saintdle/pacman` maintains the app and editable chart source;
 `saintdle/pacman-for-k8s` maintains platform installs and scenarios. During the
-publisher transition, the legacy source publisher remains live until the
-generated receiver is explicitly selected and its public output is verified.
+publisher transition, the legacy source publisher remains the sole live
+authority while the setting is unset or `helm-charts`. An approved switch
+selects the generated receiver; verify its public output before retiring the
+legacy source.
 
 ## Usage
 
@@ -36,12 +38,14 @@ The currently published compatibility pair is app `0.7.16` and chart
 `docker.io/saintdle/pacman@sha256:592740129bce7530a347146b86647f8b516df3c19105aa4c2fe40b878840fccf`
 and was built from
 [`saintdle/pacman` commit `13f04d6e6aea62f1d32d57d90e4eff786083c02e`](https://github.com/saintdle/pacman/commit/13f04d6e6aea62f1d32d57d90e4eff786083c02e).
-It includes the opt-in fault and synthetic security-probe runtime. Chart
-`0.7.17` uses source from
-[`saintdle/helm-charts` commit `c24c5267340a58259cf3d7c8f337ace4c19d1d7a`](https://github.com/saintdle/helm-charts/tree/c24c5267340a58259cf3d7c8f337ace4c19d1d7a/charts/pacman).
-These legacy releases predate schema-v1 records and have no v1 consumer lock;
-their record format does not erase the independently verified runtime evidence
-in the [public native run](https://github.com/saintdle/pacman-for-k8s/actions/runs/40221882676).
+It includes the opt-in fault and synthetic security-probe runtime. The public
+`pacman-0.7.17` chart source tag resolves to
+[`saintdle/helm-charts` commit `1d11684428b2069aef8d4e69c37237b5b3c910a5`](https://github.com/saintdle/helm-charts/commit/1d11684428b2069aef8d4e69c37237b5b3c910a5).
+The later `c24c5267340a58259cf3d7c8f337ace4c19d1d7a` commit is a migration
+donor for a chart copy, not the published release source. These legacy releases
+predate schema-v1 records and have no v1 consumer lock; their record format does
+not erase the independently verified runtime evidence in the
+[public native run](https://github.com/saintdle/pacman-for-k8s/actions/runs/40221882676).
 
 ## Publishing a chart
 
