@@ -1,10 +1,6 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { createPublicationRuntime, publishChart } from './chart-publication.mjs';
 
@@ -357,10 +353,11 @@ test('new release metadata rejects a changed source or package checksum on retry
   assert.equal(api.dispatches.length, 1);
 });
 
-test('workflow calls the tested production helper instead of a separate publication path', () => {
-  const workflow = readFileSync(new URL('../.github/workflows/chart-release.yml', import.meta.url), 'utf8');
-  assert.match(workflow, /run: node tools\/chart-publication\.mjs/);
-  assert.doesNotMatch(workflow, /steps\.guard\.outputs\.already/);
+test('generated receiver calls the candidate validator and tested publication helper', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/chart-artifact-publish.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /node tools\/chart-artifact\.mjs validate-candidate/);
+  assert.match(workflow, /node tools\/chart-artifact\.mjs publish/);
+  assert.match(workflow, /node tools\/chart-authority\.mjs pacman/);
   assert.doesNotMatch(workflow, /gh release create|gh release upload|api\.github\.com\/repos\/saintdle\/pacman-for-k8s\/dispatches/);
 });
 
@@ -394,68 +391,47 @@ test('production runtime normalizes identity before the adapter reads Pages file
   assert.deepEqual(pages.index, { entries: {} });
 });
 
-test('delayed retry after draft release creation seals the exact pinned Helm package bytes', async () => {
-  const helm = process.env.PACMAN_TEST_HELM ?? 'helm';
-  const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
-  const chartYaml = readFileSync(join(root, 'charts/pacman/Chart.yaml'), 'utf8');
-  const valuesYaml = readFileSync(join(root, 'charts/pacman/values.yaml'), 'utf8');
-  const version = chartYaml.match(/^version:\s*(\S+)/m)?.[1];
-  const appVersion = chartYaml.match(/^appVersion:\s*["']?(\S+?)["']?\s*$/m)?.[1];
-  const imageDigest = valuesYaml.match(/^\s+digest:\s*["']?(sha256:[a-f0-9]{64})["']?\s*$/m)?.[1];
-  assert.ok(version && appVersion && imageDigest, 'chart metadata required for the real Helm package fixture');
-  const distributionCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
-  const realIdentity = {
+test('retry after draft release creation seals the exact generated package bytes', async () => {
+  const generatedIdentity = {
     ...identity,
-    version,
-    appVersion,
-    imageDigest,
-    sourceCommit: distributionCommit,
-    distributionCommit,
+    sourceRepository: 'saintdle/pacman',
+    sourceCommit: 'c'.repeat(40),
   };
-  const runRealHelm = (command, args, options = {}) => {
-    if (command === 'git' && args[0] === 'rev-parse') return distributionCommit;
-    if (command === 'helm') return execFileSync(helm, args, { cwd: root, encoding: 'utf8', ...options }).trim();
-    throw new Error(`unexpected local adapter command: ${command} ${args.join(' ')}`);
-  };
-  const parseHelmYaml = (text) => {
-    if (/^name:\s*pacman\s*$/m.test(text)) {
-      return {
-        name: text.match(/^name:\s*(\S+)/m)?.[1],
-        version: text.match(/^version:\s*(\S+)/m)?.[1],
-        appVersion: text.match(/^appVersion:\s*["']?(\S+?)["']?\s*$/m)?.[1],
-      };
-    }
-    return { image: { digest: text.match(/^\s+digest:\s*["']?(sha256:[a-f0-9]{64})["']?\s*$/m)?.[1] } };
-  };
-  const builder = createPublicationRuntime(realIdentity, {
-    token: 'stub-token',
-    dispatchToken: 'stub-dispatch-token',
-    run: runRealHelm,
-    parseYaml: parseHelmYaml,
-  }).api;
+  const packageBytes = Buffer.from('exact package from the validated Pac-Man source artifact');
   const api = new PublicationApi({ failAfter: 'release' });
-  const builtPackageHashes = [];
-  api.buildPackage = async (currentIdentity) => {
+  api.buildPackage = async () => {
     api.calls.packageBuild += 1;
-    const bytes = await builder.buildPackage(currentIdentity);
-    builtPackageHashes.push(checksum(bytes));
-    return bytes;
+    return Buffer.from(packageBytes);
   };
-  api.inspectPackage = builder.inspectPackage.bind(builder);
 
-  await assert.rejects(publishChart({ identity: realIdentity, api, retryDelayMs: 0 }), /injected failure after release/);
+  const publication = {
+    identity: generatedIdentity,
+    candidateValidation: {
+      sourceRepository: 'saintdle/pacman',
+      sourceCommit: generatedIdentity.sourceCommit,
+      ref: 'refs/heads/main',
+      workflow: 'chart-ci.yml',
+      event: 'push',
+      conclusion: 'success',
+    },
+    releaseAssets: generatedReleaseAssets(generatedIdentity, packageBytes),
+    api,
+    retryDelayMs: 0,
+  };
+
+  await assert.rejects(publishChart(publication), /injected failure after release/);
   assert.equal(api.release.draft, true);
   assert.equal(api.assetBytes, null);
   assert.equal(api.dispatches.length, 0);
-  await new Promise((resolvePromise) => setTimeout(resolvePromise, 2100));
-  await publishChart({ identity: realIdentity, api, retryDelayMs: 0 });
+  await publishChart(publication);
 
   assert.equal(api.release.draft, false);
   assert.equal(api.calls.packageBuild, 2);
-  assert.notEqual(builtPackageHashes[0], builtPackageHashes[1], 'Helm 3.16.4 archive bytes should change across the delayed rebuild');
-  assert.equal(api.calls.assetUpload, 1);
+  assert.equal(api.calls.assetUpload, 3);
   assert.equal(api.calls.releasePublish, 1);
-  assert.equal(api.release.body.includes(`Package SHA-256: ${checksum(api.assetBytes)}`), true);
-  assert.deepEqual(api.pages.packageBytes, api.assetBytes);
+  assert.equal(api.release.body.includes(`Package SHA-256: ${checksum(packageBytes)}`), true);
+  assert.deepEqual(api.assetBytes, packageBytes);
+  assert.deepEqual(api.pages.packageBytes, packageBytes);
+  assert.equal(api.pages.index.entries.pacman[0].digest, checksum(packageBytes));
   assert.equal(api.dispatches.length, 1);
 });
