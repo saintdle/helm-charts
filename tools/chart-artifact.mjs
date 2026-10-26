@@ -53,7 +53,11 @@ export async function verifyPacmanChartCandidate({ sourceCommit, token, fetch: f
     && candidate.event === 'push'
     && candidate.status === 'completed'
     && candidate.conclusion === 'success'
-    && candidate.path === '.github/workflows/chart-ci.yml');
+    && [
+      '.github/workflows/chart-ci.yml',
+      '.github/workflows/chart-ci.yml@main',
+      '.github/workflows/chart-ci.yml@refs/heads/main',
+    ].includes(candidate.path));
   if (!run) fail(`no successful chart-ci.yml push validation exists for exact pacman SHA ${sourceCommit} on main`);
   return {
     sourceRepository: 'saintdle/pacman',
