@@ -1,11 +1,13 @@
 # Pac-Man chart publisher cutover
 
 The public Helm repository remains <https://saintdle.github.io/helm-charts>.
-While `PACMAN_CHART_PUBLISHER_AUTHORITY` is unset or `helm-charts`, the legacy
-publisher in this repository is the sole live publication authority. The
-generated receiver accepts only `helm-charts` or `pacman` and remains dormant
-until an explicitly approved switch selects `pacman`. This guide describes
-prospective rollout gates; it is not live-change approval.
+This guide describes the transition from the legacy publisher to the generated
+receiver; it does not approve a merge, release, or authority change. During
+pre-cutover, the source-retirement pull request stays held and `main` retains
+the legacy source and publisher. Approve and verify the generated public chain
+before separately approving that retirement merge. After retirement, the
+generated receiver accepts only `PACMAN_CHART_PUBLISHER_AUTHORITY=pacman`;
+restoring source requires a separately reviewed restoration plan.
 
 The currently published compatibility pair is app `0.7.16` and chart `0.7.17`.
 App `0.7.16` was built from
@@ -23,10 +25,10 @@ resolved its index to the amd64 child/config and exercised it in the owned
 container runtime. Preserve the released package identity, tags, and Pages
 index history.
 
-## Expand and prepare
+## Pre-cutover preparation
 
-Before each merge, review the exact head and its checks. Refresh approvals and
-CI after material changes. A merge to `main` can publish: while
+Before each pre-cutover merge, review the exact head and its checks. Refresh
+approvals and CI after material changes. A merge to `main` can publish: while
 `helm-charts` is authoritative, chart-source changes can trigger the legacy
 `chart-release.yml` publisher. Review and explicitly approve the publication
 effect of any such merge; do not assume that merging publisher preparation is
