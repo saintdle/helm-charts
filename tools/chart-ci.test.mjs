@@ -82,6 +82,103 @@ test('lifecycle helper does not pin an unrelated source commit', () => {
   assert.doesNotMatch(lifecycle, /e05647623417f620ec0b156c9e7551ec5ad040dd/);
 });
 
+test('lifecycle waits for owned pods to disappear before strict uninstall assertions', () => {
+  const uninstall = lifecycle.indexOf('  helm uninstall "$release"');
+  const podWait = lifecycle.indexOf('  wait_for_owned_pod_deletion "$namespace" "$release"');
+  const strictAbsence = lifecycle.indexOf('  for resource in deployments services pods configmaps jobs serviceaccounts; do');
+
+  assert.ok(uninstall >= 0 && uninstall < podWait && podWait < strictAbsence,
+    'owned pod deletion must be awaited between Helm uninstall and strict absence checks');
+  assert.match(lifecycle, /kubectl[\s\S]*?wait --for=delete pods -l "\$selector" --timeout=2m/);
+  assert.match(lifecycle, /owned pods remain after helm uninstall for \$release/);
+  assert.match(lifecycle, /local selector="app\.kubernetes\.io\/instance=\$release"/);
+});
+
+test('owned pod deletion wait handles absence and fails closed on query or timeout errors', () => {
+  const functionStart = lifecycle.indexOf('wait_for_owned_pod_deletion() {');
+  assert.ok(functionStart >= 0, 'the lifecycle helper must define the owned pod deletion wait');
+  const functionLines = lifecycle.slice(functionStart).split('\n');
+  const functionEnd = functionLines.findIndex((line, index) => index > 0 && line === '}');
+  assert.ok(functionEnd > 0, 'the owned pod deletion helper must be a complete shell function');
+  const waitFunction = functionLines.slice(0, functionEnd + 1).join('\n');
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'pacman-lifecycle-pod-wait-'));
+  try {
+    const fakeBin = path.join(directory, 'bin');
+    mkdirSync(fakeBin);
+    const counter = path.join(directory, 'get-count');
+    const trace = path.join(directory, 'kubectl-trace');
+    writeFileSync(counter, '0');
+    const kubectl = path.join(fakeBin, 'kubectl');
+    writeFileSync(kubectl, `#!/bin/sh
+case " $* " in
+  *" wait --for=delete pods "*)
+    printf 'wait\\n' >> "$KUBECTL_TRACE"
+    [ "$KUBECTL_MODE" = wait-success ] && exit 0
+    exit 1
+    ;;
+  *" get pods "*)
+    printf 'get\\n' >> "$KUBECTL_TRACE"
+    count=$(cat "$KUBECTL_COUNTER")
+    count=$((count + 1))
+    printf '%s' "$count" > "$KUBECTL_COUNTER"
+    case "$KUBECTL_MODE" in
+      query-error) echo 'forbidden' >&2; exit 23 ;;
+      absent) exit 0 ;;
+      disappeared-before-wait)
+        [ "$count" -eq 1 ] && printf 'pod/owned\\n'
+        exit 0
+        ;;
+      *) printf 'pod/owned\\n'; exit 0 ;;
+    esac
+    ;;
+  *) echo "unexpected kubectl call: $*" >&2; exit 64 ;;
+esac
+`);
+    chmodSync(kubectl, 0o755);
+
+    const run = (mode) => spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      waitFunction,
+      'tmp_dir="$KUBECTL_TMP"',
+      'wait_for_owned_pod_deletion test-namespace test-release',
+    ].join('\n')], {
+      env: {
+        ...process.env,
+        KUBECTL_COUNTER: counter,
+        KUBECTL_MODE: mode,
+        KUBECTL_TMP: directory,
+        KUBECTL_TRACE: trace,
+        PATH: `${fakeBin}${path.delimiter}${process.env.PATH}`,
+      },
+      encoding: 'utf8',
+    });
+
+    const completed = run('wait-success');
+    assert.equal(completed.status, 0, completed.stderr);
+    assert.match(readFileSync(trace, 'utf8'), /get[\s\S]*wait/);
+
+    writeFileSync(counter, '0');
+    writeFileSync(trace, '');
+    const absent = run('absent');
+    assert.equal(absent.status, 0, absent.stderr);
+    assert.doesNotMatch(readFileSync(trace, 'utf8'), /wait/);
+
+    writeFileSync(counter, '0');
+    const queryError = run('query-error');
+    assert.notEqual(queryError.status, 0, 'a kubectl list error must fail the lifecycle check');
+
+    writeFileSync(counter, '0');
+    const stillPresent = run('wait-fails-present');
+    assert.notEqual(stillPresent.status, 0, 'a timed-out wait with an owned pod still present must fail');
+
+    writeFileSync(counter, '0');
+    const goneAfterFailedWait = run('disappeared-before-wait');
+    assert.equal(goneAfterFailedWait.status, 0, goneAfterFailedWait.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('lifecycle invocation matches the promoted smoke tool platform=image parser after checking the revision label', () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'pacman-lifecycle-smoke-'));
   try {
