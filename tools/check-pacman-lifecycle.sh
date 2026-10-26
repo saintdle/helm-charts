@@ -106,7 +106,7 @@ image_id="$(docker image inspect --format '{{.Id}}' "$image")"
   exit 1
 }
 node "$candidate_dir/tools/smoke-container-images.js" \
-  --expected-revision "$candidate_sha" "linux/$image_arch=$image"
+  "linux/$image_arch=$image"
 
 kind create cluster \
   --name "$cluster_name" \

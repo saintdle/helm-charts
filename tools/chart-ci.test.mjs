@@ -81,3 +81,44 @@ test('lifecycle helper does not pin an unrelated source commit', () => {
   assert.match(lifecycle, /candidate_sha_expected/);
   assert.doesNotMatch(lifecycle, /e05647623417f620ec0b156c9e7551ec5ad040dd/);
 });
+
+test('lifecycle invocation matches the promoted smoke tool platform=image parser after checking the revision label', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'pacman-lifecycle-smoke-'));
+  try {
+    const parser = path.join(directory, 'historical-smoke-parser.mjs');
+    writeFileSync(parser, `
+import assert from 'node:assert/strict';
+// Adapter for the promoted historical CLI: each argument is linux/{amd64,arm64}=image.
+function parseTarget(value) {
+  const separator = value.indexOf('=');
+  if (separator < 0) throw new Error('Expected platform=image, received: ' + value);
+  const platform = value.slice(0, separator);
+  const image = value.slice(separator + 1);
+  if (!['linux/amd64', 'linux/arm64'].includes(platform) || !image) {
+    throw new Error('Expected linux/amd64=image or linux/arm64=image, received: ' + value);
+  }
+  return { platform, image };
+}
+const targets = process.argv.slice(2).map(parseTarget);
+assert.ok(targets.length > 0, 'pass one or more platform=image targets');
+console.log(JSON.stringify(targets));
+`);
+    const image = `docker.io/library/pacman:ci-${'a'.repeat(40)}`;
+    const run = (args) => spawnSync(process.execPath, [parser, ...args], { encoding: 'utf8' });
+    const accepted = run([`linux/amd64=${image}`]);
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.equal(JSON.parse(accepted.stdout)[0].image, image);
+
+    const rejected = run(['--expected-revision', 'a'.repeat(40), `linux/amd64=${image}`]);
+    assert.notEqual(rejected.status, 0);
+    assert.match(rejected.stderr, /Expected platform=image, received: --expected-revision/);
+
+    const revisionCheck = lifecycle.indexOf('[[ "$image_revision" == "$candidate_sha" ]]');
+    const smokeInvocation = lifecycle.indexOf('node "$candidate_dir/tools/smoke-container-images.js"');
+    assert.ok(revisionCheck >= 0 && revisionCheck < smokeInvocation, 'built image revision must be checked before the smoke tool runs');
+    assert.match(lifecycle.slice(smokeInvocation), /"linux\/\$image_arch=\$image"/);
+    assert.doesNotMatch(lifecycle.slice(smokeInvocation), /--expected-revision/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
