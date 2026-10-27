@@ -390,7 +390,7 @@ export function createLiveAdapter(inputIdentity, dependencies = {}) {
   if (!token) fail('GH_TOKEN is required to repair the GitHub release');
   if (!dispatchToken) fail('RELEASE_AUTOMATION_TOKEN is required to notify pacman-for-k8s');
 
-  async function request(url, { allowNotFound = false, ...options } = {}) {
+  async function request(url, { allowNotFound = false, includeHeaders = false, ...options } = {}) {
     const response = await fetchRequest(url, {
       ...options,
       headers: {
@@ -405,12 +405,45 @@ export function createLiveAdapter(inputIdentity, dependencies = {}) {
       const detail = (await response.text()).slice(0, 500);
       throw new Error(`GitHub API ${response.status}: ${detail}`);
     }
-    if (response.status === 204) return null;
-    return response.json();
+    if (response.status === 204) return includeHeaders ? { data: null, headers: response.headers } : null;
+    const data = await response.json();
+    return includeHeaders ? { data, headers: response.headers } : data;
   }
 
   async function getRelease(tag) {
-    return request(`${apiBase}/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`, { allowNotFound: true });
+    const published = await request(`${apiBase}/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`, { allowNotFound: true });
+    if (published) {
+      if (published.tag_name !== tag) fail(`release lookup for ${tag} returned a different tag`);
+      return published;
+    }
+
+    const collectionUrl = new URL(`${apiBase}/repos/${repo}/releases`);
+    collectionUrl.searchParams.set('per_page', '100');
+    collectionUrl.searchParams.set('page', '1');
+    let pageUrl = collectionUrl.toString();
+    const visitedPages = new Set();
+    const matches = [];
+    while (pageUrl) {
+      if (visitedPages.has(pageUrl)) fail(`release listing for ${tag} repeated a page`);
+      visitedPages.add(pageUrl);
+      const { data, headers } = await request(pageUrl, { includeHeaders: true });
+      if (!Array.isArray(data)) fail(`GitHub API returned an invalid release list for ${tag}`);
+      matches.push(...data.filter((release) => release?.tag_name === tag));
+
+      const nextLink = headers.get('link')?.split(/,\s*(?=<)/).find((entry) => /;\s*rel="?next"?\s*(?:;|$)/i.test(entry));
+      const nextUrlText = nextLink?.match(/<([^>]+)>/)?.[1];
+      if (!nextUrlText) {
+        pageUrl = null;
+        continue;
+      }
+      const nextUrl = new URL(nextUrlText);
+      if (nextUrl.origin !== apiBase || nextUrl.pathname !== collectionUrl.pathname || nextUrl.username || nextUrl.password) {
+        fail(`release listing for ${tag} returned an invalid pagination URL`);
+      }
+      pageUrl = nextUrl.toString();
+    }
+    if (matches.length > 1) fail(`multiple releases found for tag ${tag}`);
+    return matches[0] ?? null;
   }
 
   async function inspectPackage(bytes) {
@@ -486,7 +519,7 @@ export function createLiveAdapter(inputIdentity, dependencies = {}) {
       const assets = release.assets.filter((asset) => asset.name === filename);
       if (assets.length > 1) fail(`release ${tag} has multiple assets named ${filename}`);
       if (!assets.length) return null;
-      const response = await fetch(assets[0].url, { headers: { Accept: 'application/octet-stream', Authorization: `Bearer ${token}` } });
+      const response = await fetchRequest(assets[0].url, { headers: { Accept: 'application/octet-stream', Authorization: `Bearer ${token}` } });
       if (!response.ok) throw new Error(`could not download ${filename} from release ${tag}: HTTP ${response.status}`);
       return Buffer.from(await response.arrayBuffer());
     },
