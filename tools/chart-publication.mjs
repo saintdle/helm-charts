@@ -13,6 +13,7 @@ const apiBase = 'https://api.github.com';
 const uploadBase = 'https://uploads.github.com';
 const maxPublicAttempts = 61;
 const maxPublicWaitMs = 10 * 60 * 1000;
+const maxPublicSleepOvershootMs = 1000; // Allow one final check after modest timer drift.
 
 function fail(message) {
   throw new Error(message);
@@ -326,8 +327,15 @@ export async function publishChart({ identity: inputIdentity, api, candidateVali
   };
   const publicDeadline = currentTime() + publicWaitMs;
   let publicChecks = 0;
+  let finalBoundaryCheckUsed = false;
   for (let attempt = 1; attempt <= publicAttempts; attempt += 1) {
-    if (attempt > 1 && currentTime() >= publicDeadline) break;
+    if (attempt > 1) {
+      const now = currentTime();
+      if (now >= publicDeadline) {
+        if (finalBoundaryCheckUsed || now - publicDeadline > maxPublicSleepOvershootMs) break;
+        finalBoundaryCheckUsed = true;
+      }
+    }
     publicChecks = attempt;
     try {
       const publication = await api.readPublicPublication(identity);
