@@ -11,6 +11,8 @@ const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const checksumPattern = /^[a-f0-9]{64}$/;
 const apiBase = 'https://api.github.com';
 const uploadBase = 'https://uploads.github.com';
+const maxPublicAttempts = 61;
+const maxPublicWaitMs = 10 * 60 * 1000;
 
 function fail(message) {
   throw new Error(message);
@@ -225,9 +227,11 @@ async function checkpoint(api, stage) {
   await api.checkpoint?.(stage);
 }
 
-export async function publishChart({ identity: inputIdentity, api, candidateValidation, releaseAssets, publicAttempts = 5, retryDelayMs = 5000 }) {
+export async function publishChart({ identity: inputIdentity, api, candidateValidation, releaseAssets, publicAttempts = maxPublicAttempts, retryDelayMs = 10000, publicWaitMs = maxPublicWaitMs }) {
   if (!api) fail('publication API is required');
-  if (!Number.isInteger(publicAttempts) || publicAttempts < 1) fail('publicAttempts must be a positive integer');
+  if (!Number.isSafeInteger(publicAttempts) || publicAttempts < 1 || publicAttempts > maxPublicAttempts) fail(`publicAttempts must be an integer from 1 to ${maxPublicAttempts}`);
+  if (!Number.isFinite(retryDelayMs) || retryDelayMs < 0 || retryDelayMs > maxPublicWaitMs) fail(`retryDelayMs must be a finite number from 0 to ${maxPublicWaitMs}`);
+  if (!Number.isFinite(publicWaitMs) || publicWaitMs < 1 || publicWaitMs > maxPublicWaitMs) fail(`publicWaitMs must be a finite number from 1 to ${maxPublicWaitMs}`);
   const identity = validateIdentity(inputIdentity);
   assertGeneratedSourceCandidate(identity, candidateValidation);
   let generatedAssets = null;
@@ -313,7 +317,18 @@ export async function publishChart({ identity: inputIdentity, api, candidateVali
 
   let verifiedPublic = false;
   let lastPublicError = 'public package or Helm index is unavailable';
+  let lastPublicTime = -Infinity;
+  const currentTime = () => {
+    const value = api.now?.() ?? performance.now();
+    if (!Number.isFinite(value) || value < lastPublicTime) fail('public-read clock must return finite, monotonic values');
+    lastPublicTime = value;
+    return value;
+  };
+  const publicDeadline = currentTime() + publicWaitMs;
+  let publicChecks = 0;
   for (let attempt = 1; attempt <= publicAttempts; attempt += 1) {
+    if (attempt > 1 && currentTime() >= publicDeadline) break;
+    publicChecks = attempt;
     try {
       const publication = await api.readPublicPublication(identity);
       if (publication?.packageBytes && sha256(Buffer.from(publication.packageBytes)) === assetChecksum
@@ -325,9 +340,12 @@ export async function publishChart({ identity: inputIdentity, api, candidateVali
     } catch (error) {
       lastPublicError = error.message;
     }
-    if (attempt < publicAttempts) await api.sleep(retryDelayMs);
+    const remainingMs = publicDeadline - currentTime();
+    if (!verifiedPublic && attempt < publicAttempts && remainingMs > 0) {
+      await api.sleep(Math.min(retryDelayMs, remainingMs));
+    }
   }
-  if (!verifiedPublic) fail(`public publication for ${identity.tag} failed verification after ${publicAttempts} attempts: ${lastPublicError}`);
+  if (!verifiedPublic) fail(`public publication for ${identity.tag} failed verification after ${publicChecks} attempts: ${lastPublicError}`);
   await checkpoint(api, 'public-checksum');
 
   const payload = {
