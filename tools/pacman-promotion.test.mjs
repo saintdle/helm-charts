@@ -222,12 +222,17 @@ test('checked-in promotion state matches the chart source and published package 
   const state = JSON.parse(readFileSync(new URL('../pacman-promotion-state.json', import.meta.url), 'utf8'));
   const chart = readFileSync(new URL('../charts/pacman/Chart.yaml', import.meta.url), 'utf8');
   const values = readFileSync(new URL('../charts/pacman/values.yaml', import.meta.url), 'utf8');
+  const differentAppVersion = state.app.version === '0.0.0' ? '0.0.1' : '0.0.0';
+  const differentAppDigest = state.app.image_manifest_list_digest === `sha256:${'a'.repeat(64)}`
+    ? `sha256:${'b'.repeat(64)}` : `sha256:${'a'.repeat(64)}`;
+  const differentChartVersion = state.chart.version === '0.0.0' ? '0.0.1' : '0.0.0';
+
   assertPromotionStateMatchesChart(state, chart, values);
-  assert.throws(() => assertPromotionStateMatchesChart({ ...state, app: { ...state.app, version: '0.7.15' } }, chart, values),
+  assert.throws(() => assertPromotionStateMatchesChart({ ...state, app: { ...state.app, version: differentAppVersion } }, chart, values),
     /promotion app version must match/);
-  assert.throws(() => assertPromotionStateMatchesChart({ ...state, app: { ...state.app, image_manifest_list_digest: `sha256:${'a'.repeat(64)}` } }, chart, values),
+  assert.throws(() => assertPromotionStateMatchesChart({ ...state, app: { ...state.app, image_manifest_list_digest: differentAppDigest } }, chart, values),
     /promotion app digest must match/);
-  assert.throws(() => assertPromotionStateMatchesChart({ ...state, chart: { ...state.chart, version: '0.7.17' } }, chart, values),
+  assert.throws(() => assertPromotionStateMatchesChart({ ...state, chart: { ...state.chart, version: differentChartVersion } }, chart, values),
     /promotion chart version must match/);
 });
 
@@ -257,6 +262,39 @@ test('production write-state output for the next promotion matches updated chart
     const state = JSON.parse(readFileSync(statePath, 'utf8'));
     assert.deepEqual(state.chart, { version: '0.7.19' }, 'production writer stores only the chart version');
     assertPromotionStateMatchesChart(state, 'version: 0.7.19\nappVersion: "0.7.17"\n', `image:\n  digest: "${digest}"\n`);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('production write-state output for a coherent rollback matches chart source', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'pacman-rollback-state-'));
+  try {
+    const planPath = join(directory, 'plan.json');
+    const statePath = join(directory, 'state.json');
+    const digest = `sha256:${'d'.repeat(64)}`;
+    const reference = 'https://github.com/saintdle/pacman/releases/download/pacman-v0.7.15/app-release-record.json';
+    writeFileSync(planPath, JSON.stringify({
+      action: 'rollback-proposal',
+      rollback_reason: 'Restore the verified prior application release',
+      app: {
+        version: '0.7.15',
+        reference,
+        sha256: 'c'.repeat(64),
+        format: 'app-release-v1',
+        source_commit: 'b'.repeat(40),
+        image_repository: 'docker.io/saintdle/pacman',
+        image_manifest_list_digest: digest,
+        missing_evidence: [],
+      },
+      chart: { version: '0.7.20' },
+    }));
+    const result = spawnSync(process.execPath, [promotionCli, 'write-state', planPath, statePath], { encoding: 'utf8' });
+
+    assert.equal(result.status, 0, result.stderr);
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    assert.equal(state.mode, 'rollback');
+    assert.deepEqual(state.chart, { version: '0.7.20' }, 'production writer stores only the chart version');
+    assert.equal(state.rollback.target_reference, reference);
+    assertPromotionStateMatchesChart(state, 'version: 0.7.20\nappVersion: "0.7.15"\n', `image:\n  digest: "${digest}"\n`);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
