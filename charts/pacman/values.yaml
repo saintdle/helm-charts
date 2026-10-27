@@ -5,7 +5,7 @@ database: mongo
 image:
   # Pinned by digest for reproducibility. Override `tag` to skip the digest.
   repository: docker.io/saintdle/pacman
-  digest: "sha256:592740129bce7530a347146b86647f8b516df3c19105aa4c2fe40b878840fccf"
+  digest: "sha256:2a55f4d74bc05dea3ae05912fbdcbe9348f9aafb752902054a7f066cfa112f68"
   tag: ""
   pullPolicy: IfNotPresent
 imagePullSecrets: []
@@ -67,7 +67,6 @@ simulator:
     limits:
       cpu: 500m
       memory: 256Mi
-
 # -- Opt-in fault and security-probe demo controls. The Secret must contain a
 # `token` key; its value is never rendered into a manifest.
 demo:
@@ -76,7 +75,6 @@ demo:
   tokenHeader: x-demo-token
   fileProbeEnabled: false
   execProbeEnabled: false
-
 # -- Optional integrations for demo telemetry and policy demonstrations.
 serviceMonitor:
   enabled: false
