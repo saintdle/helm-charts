@@ -9,6 +9,28 @@ const workflow = readFileSync(new URL('../.github/workflows/chart-ci.yml', impor
 const lifecycle = readFileSync(new URL('./check-pacman-lifecycle.sh', import.meta.url), 'utf8');
 const repositoryRoot = path.resolve(new URL('..', import.meta.url).pathname);
 
+function workflowRunBlock(name) {
+  const marker = `      - name: ${name}\n`;
+  const start = workflow.indexOf(marker);
+  assert.notEqual(start, -1, `Chart CI must contain the ${name} step`);
+  const stepEnd = workflow.indexOf('\n      - name:', start + marker.length);
+  const step = workflow.slice(start, stepEnd === -1 ? workflow.length : stepEnd);
+  const runMarker = '        run: |\n';
+  const runStart = step.indexOf(runMarker);
+  assert.notEqual(runStart, -1, `${name} must use a multiline run block`);
+  const lines = step.slice(runStart + runMarker.length).split('\n');
+  const script = [];
+  for (const line of lines) {
+    if (line === '') {
+      script.push('');
+      continue;
+    }
+    if (!line.startsWith('          ')) break;
+    script.push(line.slice(10));
+  }
+  return script.join('\n').trimEnd();
+}
+
 test('required manifests aggregates all chart contracts and both database lifecycle lanes', () => {
   assert.match(workflow, /^  manifests:\n[\s\S]*?needs: \[detect, chart-contracts, candidate-identity, lifecycle, promotion-state-regression\]/m);
   assert.match(workflow, /^  manifests:\n[\s\S]*?if: always\(\)/m);
@@ -26,13 +48,55 @@ test('required manifests aggregates all chart contracts and both database lifecy
   assert.match(workflow, /run: bash tools\/check-pacman-lifecycle\.sh "\$CHART_DIR" pacman-source "\$DATABASE" "\$EXPECTED_SOURCE_SHA"/);
 });
 
-test('required manifests runs artifact and publication transport suites when their helpers change', () => {
+test('required manifests runs artifact and publication transport suites when helpers or publisher workflow change', () => {
   assert.match(workflow, /publisher_transport_changed: \$\{\{ steps\.detect\.outputs\.publisher_transport_changed \}\}/);
-  assert.match(workflow, /git diff --quiet FETCH_HEAD -- tools\/chart-artifact\.mjs tools\/chart-artifact\.test\.mjs tools\/chart-publication\.mjs tools\/chart-publication\.test\.mjs tools\/chart-ci\.test\.mjs \.github\/workflows\/chart-ci\.yml/);
+  assert.match(workflow, /git diff --quiet FETCH_HEAD -- tools\/chart-artifact\.mjs tools\/chart-artifact\.test\.mjs tools\/chart-publication\.mjs tools\/chart-publication\.test\.mjs tools\/chart-ci\.test\.mjs \.github\/workflows\/chart-ci\.yml \.github\/workflows\/chart-artifact-publish\.yml/);
   assert.match(workflow, /Set up Helm\n\s+if: needs\.detect\.outputs\.changed == 'true' \|\| needs\.detect\.outputs\.publisher_transport_changed == 'true'/);
   assert.match(workflow, /name: Set up Node\.js for publisher transport suites\n\s+if: needs\.detect\.outputs\.publisher_transport_changed == 'true'/);
   assert.match(workflow, /name: Run artifact and publication transport suites\n\s+if: needs\.detect\.outputs\.publisher_transport_changed == 'true'\n\s+run: node --test tools\/chart-artifact\.test\.mjs tools\/chart-publication\.test\.mjs/);
   assert.match(workflow, /^  manifests:\n[\s\S]*?name: Run artifact and publication transport suites/m);
+});
+
+test('publisher-workflow-only change selects the existing required manifests transport suites', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'pacman-chart-ci-selector-'));
+  try {
+    const remote = path.join(directory, 'origin.git');
+    const candidate = path.join(directory, 'candidate');
+    const output = path.join(directory, 'github-output');
+    execFileSync('git', ['init', '--quiet', '--bare', remote]);
+    execFileSync('git', ['init', '--quiet', '--initial-branch=main', candidate]);
+    execFileSync('git', ['-C', candidate, 'config', 'user.name', 'Chart CI selector test']);
+    execFileSync('git', ['-C', candidate, 'config', 'user.email', 'chart-ci-selector-test@example.invalid']);
+    execFileSync('git', ['-C', candidate, 'remote', 'add', 'origin', remote]);
+    const publisherWorkflowPath = path.join(candidate, '.github/workflows/chart-artifact-publish.yml');
+    mkdirSync(path.dirname(publisherWorkflowPath), { recursive: true });
+    writeFileSync(publisherWorkflowPath, 'name: original publisher workflow\n');
+    execFileSync('git', ['-C', candidate, 'add', '.github/workflows/chart-artifact-publish.yml']);
+    execFileSync('git', ['-C', candidate, 'commit', '--quiet', '-m', 'base publisher workflow']);
+    execFileSync('git', ['-C', candidate, 'push', '--quiet', '-u', 'origin', 'main']);
+
+    writeFileSync(publisherWorkflowPath, 'name: updated publisher workflow\n');
+    execFileSync('git', ['-C', candidate, 'commit', '--quiet', '-am', 'change publisher workflow']);
+    const changedPaths = execFileSync('git', ['-C', candidate, 'diff', '--name-only', 'origin/main', 'HEAD'], { encoding: 'utf8' });
+    assert.equal(changedPaths.trim(), '.github/workflows/chart-artifact-publish.yml');
+
+    const detectRun = workflowRunBlock('Detect chart contract change').replaceAll('${{ github.base_ref }}', 'main');
+    writeFileSync(output, '');
+    const result = spawnSync('bash', ['-e', '-u', '-o', 'pipefail', '-c', detectRun], {
+      cwd: candidate,
+      env: { ...process.env, CHART_DIR: 'charts/pacman', GITHUB_OUTPUT: output },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, `Chart CI change detection failed: ${result.stderr}`);
+    assert.deepEqual(
+      Object.fromEntries(readFileSync(output, 'utf8').trim().split('\n').map((line) => line.split('='))),
+      { changed: 'false', promotion_state_changed: 'false', publisher_transport_changed: 'true' },
+    );
+
+    assert.match(workflow, /name: Run artifact and publication transport suites\n\s+if: needs\.detect\.outputs\.publisher_transport_changed == 'true'\n\s+run: node --test tools\/chart-artifact\.test\.mjs tools\/chart-publication\.test\.mjs/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('promotion-state regression selects both promotion and Chart CI contract tests', () => {
