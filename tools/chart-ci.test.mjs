@@ -26,6 +26,15 @@ test('required manifests aggregates all chart contracts and both database lifecy
   assert.match(workflow, /run: bash tools\/check-pacman-lifecycle\.sh "\$CHART_DIR" pacman-source "\$DATABASE" "\$EXPECTED_SOURCE_SHA"/);
 });
 
+test('required manifests runs artifact and publication transport suites when their helpers change', () => {
+  assert.match(workflow, /publisher_transport_changed: \$\{\{ steps\.detect\.outputs\.publisher_transport_changed \}\}/);
+  assert.match(workflow, /git diff --quiet FETCH_HEAD -- tools\/chart-artifact\.mjs tools\/chart-artifact\.test\.mjs tools\/chart-publication\.mjs tools\/chart-publication\.test\.mjs tools\/chart-ci\.test\.mjs \.github\/workflows\/chart-ci\.yml/);
+  assert.match(workflow, /Set up Helm\n\s+if: needs\.detect\.outputs\.changed == 'true' \|\| needs\.detect\.outputs\.publisher_transport_changed == 'true'/);
+  assert.match(workflow, /name: Set up Node\.js for publisher transport suites\n\s+if: needs\.detect\.outputs\.publisher_transport_changed == 'true'/);
+  assert.match(workflow, /name: Run artifact and publication transport suites\n\s+if: needs\.detect\.outputs\.publisher_transport_changed == 'true'\n\s+run: node --test tools\/chart-artifact\.test\.mjs tools\/chart-publication\.test\.mjs/);
+  assert.match(workflow, /^  manifests:\n[\s\S]*?name: Run artifact and publication transport suites/m);
+});
+
 test('promotion-state regression selects both promotion and Chart CI contract tests', () => {
   const paths = /if git diff --quiet FETCH_HEAD -- ([^\n]+); then\n\s+echo "promotion_state_changed=false"/.exec(workflow)?.[1];
 
