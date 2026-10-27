@@ -185,3 +185,128 @@ test('schema-v1 app record and metadata must agree on checksum and identity', ()
     sha256: '5e8c313be3fca5718168b8a2ad669bd56d49935d2d4f54c4315561124777db79', format: 'app-release-v1',
   }), /does not pin/);
 });
+
+function assertPromotionStateMatchesChart(state, chart, values) {
+  const field = (source, name) => {
+    const match = new RegExp(`^${name}:\\s*"?([^"\\s]+)"?\\s*$`, 'm').exec(source);
+    assert.ok(match, `chart source must contain ${name}`);
+    return match[1];
+  };
+  const valuesDigest = /^image:\s*\n(?:[ \t].*\n)*?[ \t]+digest:\s*"?(sha256:[a-f0-9]{64})"?/m.exec(values)?.[1];
+  const chartVersion = field(chart, 'version');
+  const appVersion = field(chart, 'appVersion');
+
+  assert.ok(valuesDigest, 'chart values must include a canonical SHA-256 image digest');
+  assert.equal(state.app.version, appVersion, 'promotion app version must match Chart.yaml');
+  assert.equal(state.app.image_manifest_list_digest, valuesDigest, 'promotion app digest must match values.yaml');
+  assert.equal(state.chart.version, chartVersion, 'promotion chart version must match Chart.yaml');
+
+  if (state.chart.format === 'legacy-chart-package-v0') {
+    assert.equal(state.chart.release_tag, `pacman-${chartVersion}`);
+    assert.equal(state.chart.package_reference,
+      `https://github.com/saintdle/helm-charts/releases/download/pacman-${chartVersion}/pacman-${chartVersion}.tgz`);
+    assert.match(state.chart.package_sha256 ?? '', /^[a-f0-9]{64}$/);
+    assert.deepEqual(state.chart.missing_evidence, ['chart_release_record']);
+  }
+  if (chartVersion === '0.7.18') {
+    assert.equal(state.chart.format, 'legacy-chart-package-v0');
+    assert.equal(state.chart.release_tag, 'pacman-0.7.18');
+    assert.equal(state.chart.package_reference,
+      'https://github.com/saintdle/helm-charts/releases/download/pacman-0.7.18/pacman-0.7.18.tgz');
+    assert.equal(state.chart.package_sha256, '68f51615bc494f3f5f58a55e7550b156eed3374947557634c875a4affb0e29bd');
+    assert.deepEqual(state.chart.missing_evidence, ['chart_release_record']);
+  }
+}
+
+test('checked-in promotion state matches the chart source and published package identity', () => {
+  const state = JSON.parse(readFileSync(new URL('../pacman-promotion-state.json', import.meta.url), 'utf8'));
+  const chart = readFileSync(new URL('../charts/pacman/Chart.yaml', import.meta.url), 'utf8');
+  const values = readFileSync(new URL('../charts/pacman/values.yaml', import.meta.url), 'utf8');
+  const differentAppVersion = state.app.version === '0.0.0' ? '0.0.1' : '0.0.0';
+  const differentAppDigest = state.app.image_manifest_list_digest === `sha256:${'a'.repeat(64)}`
+    ? `sha256:${'b'.repeat(64)}` : `sha256:${'a'.repeat(64)}`;
+  const differentChartVersion = state.chart.version === '0.0.0' ? '0.0.1' : '0.0.0';
+
+  assertPromotionStateMatchesChart(state, chart, values);
+  assert.throws(() => assertPromotionStateMatchesChart({ ...state, app: { ...state.app, version: differentAppVersion } }, chart, values),
+    /promotion app version must match/);
+  assert.throws(() => assertPromotionStateMatchesChart({ ...state, app: { ...state.app, image_manifest_list_digest: differentAppDigest } }, chart, values),
+    /promotion app digest must match/);
+  assert.throws(() => assertPromotionStateMatchesChart({ ...state, chart: { ...state.chart, version: differentChartVersion } }, chart, values),
+    /promotion chart version must match/);
+});
+
+test('production write-state output for the next promotion matches updated chart source', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'pacman-next-promotion-state-'));
+  try {
+    const planPath = join(directory, 'plan.json');
+    const statePath = join(directory, 'state.json');
+    const digest = `sha256:${'e'.repeat(64)}`;
+    writeFileSync(planPath, JSON.stringify({
+      action: 'promotion',
+      app: {
+        version: '0.7.17',
+        reference: 'https://github.com/saintdle/pacman/releases/download/pacman-v0.7.17/app-release-record.json',
+        sha256: 'f'.repeat(64),
+        format: 'app-release-v1',
+        source_commit: 'a'.repeat(40),
+        image_repository: 'docker.io/saintdle/pacman',
+        image_manifest_list_digest: digest,
+        missing_evidence: [],
+      },
+      chart: { version: '0.7.19' },
+    }));
+    const result = spawnSync(process.execPath, [promotionCli, 'write-state', planPath, statePath], { encoding: 'utf8' });
+
+    assert.equal(result.status, 0, result.stderr);
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    assert.deepEqual(state.chart, { version: '0.7.19' }, 'production writer stores only the chart version');
+    assertPromotionStateMatchesChart(state, 'version: 0.7.19\nappVersion: "0.7.17"\n', `image:\n  digest: "${digest}"\n`);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('production write-state output for a coherent rollback matches chart source', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'pacman-rollback-state-'));
+  try {
+    const planPath = join(directory, 'plan.json');
+    const statePath = join(directory, 'state.json');
+    const digest = `sha256:${'d'.repeat(64)}`;
+    const reference = 'https://github.com/saintdle/pacman/releases/download/pacman-v0.7.15/app-release-record.json';
+    writeFileSync(planPath, JSON.stringify({
+      action: 'rollback-proposal',
+      rollback_reason: 'Restore the verified prior application release',
+      app: {
+        version: '0.7.15',
+        reference,
+        sha256: 'c'.repeat(64),
+        format: 'app-release-v1',
+        source_commit: 'b'.repeat(40),
+        image_repository: 'docker.io/saintdle/pacman',
+        image_manifest_list_digest: digest,
+        missing_evidence: [],
+      },
+      chart: { version: '0.7.20' },
+    }));
+    const result = spawnSync(process.execPath, [promotionCli, 'write-state', planPath, statePath], { encoding: 'utf8' });
+
+    assert.equal(result.status, 0, result.stderr);
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    assert.equal(state.mode, 'rollback');
+    assert.deepEqual(state.chart, { version: '0.7.20' }, 'production writer stores only the chart version');
+    assert.equal(state.rollback.target_reference, reference);
+    assertPromotionStateMatchesChart(state, 'version: 0.7.20\nappVersion: "0.7.15"\n', `image:\n  digest: "${digest}"\n`);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('Chart CI runs promotion-state regression for chart-source-only changes', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/chart-ci.yml', import.meta.url), 'utf8');
+  const paths = /if git diff --quiet FETCH_HEAD -- ([^\n]+); then\n\s+echo "promotion_state_changed=false"/.exec(workflow)?.[1];
+
+  assert.ok(paths, 'Chart CI must detect changes that affect promotion-state regression');
+  assert.match(paths, /"\$CHART_DIR"/);
+  assert.match(paths, /pacman-promotion-state\.json/);
+  assert.match(paths, /tools\/pacman-promotion\.test\.mjs/);
+  assert.match(workflow, /promotion-state-regression:\n[\s\S]*?if: needs\.detect\.outputs\.promotion_state_changed == 'true'/);
+  assert.match(workflow, /run: node --test tools\/pacman-promotion\.test\.mjs/);
+  assert.match(workflow, /needs: \[detect, chart-contracts, candidate-identity, lifecycle, promotion-state-regression\]/);
+});

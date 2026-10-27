@@ -14,11 +14,11 @@
     "missing_evidence": ["platform_descriptors", "provenance", "signature"]
   },
   "chart": {
-    "version": "0.7.17",
+    "version": "0.7.18",
     "format": "legacy-chart-package-v0",
-    "release_tag": "pacman-0.7.17",
-    "package_reference": "https://github.com/saintdle/helm-charts/releases/download/pacman-0.7.17/pacman-0.7.17.tgz",
-    "package_sha256": "b0722ab17320afe14d5bee5ebf25ed26c9dcfa59f24e238764c4b2d8a76eb971",
+    "release_tag": "pacman-0.7.18",
+    "package_reference": "https://github.com/saintdle/helm-charts/releases/download/pacman-0.7.18/pacman-0.7.18.tgz",
+    "package_sha256": "68f51615bc494f3f5f58a55e7550b156eed3374947557634c875a4affb0e29bd",
     "missing_evidence": ["chart_release_record"]
   }
 }
