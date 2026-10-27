@@ -1,15 +1,14 @@
 name: Chart CI
 
 # Runs on every pull request so the two required checks always report a status
-# (a required check that never runs would block the PR forever). Both checks are
-# no-ops when the chart is untouched:
+# (a required check that never runs would block the PR forever). version-gate
+# and manifests remain the required checks. manifests aggregates the static
+# chart contracts and exact-candidate lifecycle jobs before rendering a preview.
 #   * version-gate — fails unless charts/pacman/Chart.yaml `version` is bumped
 #     to a new, unreleased value when the chart changes. This is the "new version
 #     must be declared" flag that must be green before the PR can merge.
-#   * manifests    — lints the chart and renders the manifests for both database
-#     backends, posts a preview (diff vs. the base branch) as a sticky PR
-#     comment, and uploads the full rendered manifests as an artifact so they
-#     can be reviewed or applied before the PR merges.
+#   * manifests — fails if any static or lifecycle lane fails, then renders the
+#     manifests for both backends, posts a preview, and uploads the artifact.
 
 on:
   pull_request:
@@ -91,47 +90,241 @@ jobs:
             echo "| \`$name\` | \`$base_version\` | \`$pr_version\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  manifests:
-    name: manifests
+  detect:
+    name: detect-chart-change
     runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.detect.outputs.changed }}
     steps:
       - name: Checkout PR
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
+      - name: Detect chart contract change
+        id: detect
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          if git diff --quiet FETCH_HEAD -- "$CHART_DIR" tools/check-pacman-*.sh pacman-promotion-state.json .github/workflows/chart-ci.yml; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  chart-contracts:
+    name: chart-contracts
+    needs: detect
+    if: needs.detect.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
       - name: Set up Helm
         uses: azure/setup-helm@v5
         with:
           version: ${{ env.HELM_VERSION }}
 
-      - name: Detect chart change
-        id: detect
-        run: |
-          set -euo pipefail
-          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
-          if git diff --quiet FETCH_HEAD -- "$CHART_DIR"; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "Chart unchanged; manifest preview skipped."
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Lint chart
-        if: steps.detect.outputs.changed == 'true'
         run: helm lint "$CHART_DIR"
 
       - name: Verify application probe contract
-        if: steps.detect.outputs.changed == 'true'
         run: bash tools/check-pacman-probes.sh "$CHART_DIR"
 
       - name: Verify PostgreSQL migration lifecycle
-        if: steps.detect.outputs.changed == 'true'
         run: bash tools/check-pacman-postgres-migration.sh "$CHART_DIR"
+
+      - name: Verify fault-demo contract
+        run: bash tools/check-pacman-fault-demo.sh "$CHART_DIR"
+
+      - name: Verify optional-resource contract
+        run: bash tools/check-pacman-optional-resources.sh "$CHART_DIR"
+
+  candidate-identity:
+    name: candidate-identity
+    needs: detect
+    if: needs.detect.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.identity.outputs.source_sha }}
+    steps:
+      - name: Checkout PR candidate
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Validate the promoted app source identity
+        id: identity
+        run: |
+          set -euo pipefail
+          source_repository=$(jq -r '.app.source_repository // ""' pacman-promotion-state.json)
+          source_commit=$(jq -r '.app.source_commit // ""' pacman-promotion-state.json)
+          state_version=$(jq -r '.app.version // ""' pacman-promotion-state.json)
+          state_digest=$(jq -r '.app.image_manifest_list_digest // ""' pacman-promotion-state.json)
+          chart_version=$(yq -r '.appVersion' "$CHART_DIR/Chart.yaml")
+          values_digest=$(yq -r '.image.digest' "$CHART_DIR/values.yaml")
+
+          [[ "$source_repository" == https://github.com/saintdle/pacman ]] || {
+            echo "promotion record does not identify the Pac-Man source repository" >&2
+            exit 1
+          }
+          [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "promotion record source commit must be a full lowercase Git SHA" >&2
+            exit 1
+          }
+          [[ "$state_version" == "$chart_version" ]] || {
+            echo "promotion app version $state_version does not match chart appVersion $chart_version" >&2
+            exit 1
+          }
+          [[ "$state_digest" =~ ^sha256:[0-9a-f]{64}$ && "$state_digest" == "$values_digest" ]] || {
+            echo "promotion app digest does not match the chart's pinned image digest" >&2
+            exit 1
+          }
+
+          echo "source_sha=$source_commit" >> "$GITHUB_OUTPUT"
+          echo "Validated Pac-Man $state_version at $source_commit with the chart's pinned digest."
+
+  lifecycle:
+    name: lifecycle (${{ matrix.database }})
+    needs: [detect, candidate-identity]
+    if: needs.detect.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [mongo, postgres]
+    steps:
+      - name: Checkout chart PR candidate
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Checkout the immutable promoted Pac-Man source
+        uses: actions/checkout@v5
+        with:
+          repository: saintdle/pacman
+          ref: ${{ needs.candidate-identity.outputs.source_sha }}
+          path: pacman-source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Confirm checked-out source identity
+        env:
+          EXPECTED_SOURCE_SHA: ${{ needs.candidate-identity.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          source_sha=$(git -C pacman-source rev-parse HEAD)
+          [[ "$source_sha" == "$EXPECTED_SOURCE_SHA" ]] || {
+            echo "checked-out Pac-Man source $source_sha does not match promoted source $EXPECTED_SOURCE_SHA" >&2
+            exit 1
+          }
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Install Kind with checksum verification
+        env:
+          KIND_VERSION: v0.30.0
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64) kind_arch=amd64 ;;
+            aarch64|arm64) kind_arch=arm64 ;;
+            *) echo "Unsupported runner architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+
+          temp_dir=$(mktemp -d)
+          trap 'rm -rf "$temp_dir"' EXIT
+          curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 \
+            -o "$temp_dir/kind-linux-${kind_arch}" \
+            "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-${kind_arch}"
+          curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 \
+            -o "$temp_dir/kind-linux-${kind_arch}.sha256sum" \
+            "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-${kind_arch}.sha256sum"
+          grep -F "kind-linux-${kind_arch}" "$temp_dir/kind-linux-${kind_arch}.sha256sum" \
+            | (cd "$temp_dir" && sha256sum -c --status)
+          sudo install -m 0755 "$temp_dir/kind-linux-${kind_arch}" /usr/local/bin/kind
+          kind version
+          kubectl version --client=true
+
+      - name: Run install and upgrade lifecycle for both role modes
+        env:
+          DATABASE: ${{ matrix.database }}
+          EXPECTED_SOURCE_SHA: ${{ needs.candidate-identity.outputs.source_sha }}
+        run: bash tools/check-pacman-lifecycle.sh "$CHART_DIR" pacman-source "$DATABASE" "$EXPECTED_SOURCE_SHA"
+
+  manifests:
+    name: manifests
+    needs: [detect, chart-contracts, candidate-identity, lifecycle]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Require every applicable validation lane
+        env:
+          CHART_CHANGED: ${{ needs.detect.outputs.changed }}
+          DETECT_RESULT: ${{ needs.detect.result }}
+          CONTRACTS_RESULT: ${{ needs.chart-contracts.result }}
+          CANDIDATE_RESULT: ${{ needs.candidate-identity.result }}
+          LIFECYCLE_RESULT: ${{ needs.lifecycle.result }}
+        run: |
+          set -euo pipefail
+          [[ "$DETECT_RESULT" == success ]] || { echo "chart-change detection did not succeed" >&2; exit 1; }
+          case "$CHART_CHANGED" in
+            true)
+              for lane in CONTRACTS_RESULT CANDIDATE_RESULT LIFECYCLE_RESULT; do
+                result="${!lane}"
+                [[ "$result" == success ]] || {
+                  echo "required chart validation lane $lane completed as $result" >&2
+                  exit 1
+                }
+              done
+              echo "All four static chart contracts and both backend lifecycle matrices passed."
+              ;;
+            false)
+              for lane in CONTRACTS_RESULT CANDIDATE_RESULT LIFECYCLE_RESULT; do
+                result="${!lane}"
+                [[ "$result" == skipped ]] || {
+                  echo "unchanged chart unexpectedly ran validation lane $lane as $result" >&2
+                  exit 1
+                }
+              done
+              echo "Chart and its contracts are unchanged; chart validation is not applicable."
+              echo "### Chart checks skipped (chart unchanged)" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+              ;;
+            *)
+              echo "chart-change detection did not publish a boolean result" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Set up Helm
+        if: needs.detect.outputs.changed == 'true'
+        uses: azure/setup-helm@v5
+        with:
+          version: ${{ env.HELM_VERSION }}
 
       - name: Render manifests and build preview
         id: render
-        if: steps.detect.outputs.changed == 'true'
+        if: needs.detect.outputs.changed == 'true'
         run: |
           set -euo pipefail
           mkdir -p rendered
@@ -139,13 +332,11 @@ jobs:
           pr_version=$(yq '.version' "$CHART_DIR/Chart.yaml")
           backends="mongo postgres"
 
-          # Render this PR's chart for each backend.
           for db in $backends; do
             helm template "$name" "$CHART_DIR" --namespace pacman-demo \
               --set database="$db" > "rendered/${db}.yaml"
           done
 
-          # Render the base branch's chart (if present) for a diff.
           git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
           have_base=false
           if git cat-file -e "FETCH_HEAD:$CHART_DIR/Chart.yaml" 2>/dev/null; then
@@ -194,12 +385,11 @@ jobs:
             done
           } > rendered/comment.md
 
-          # Clean up worktree and base renders so they are not in the artifact.
           rm -f rendered/base-*.yaml rendered/diff-*.patch
           git worktree remove --force .base 2>/dev/null || true
 
       - name: Upload rendered manifests
-        if: always() && steps.detect.outputs.changed == 'true'
+        if: always() && needs.detect.outputs.changed == 'true'
         uses: actions/upload-artifact@v5
         with:
           name: rendered-manifests
@@ -207,7 +397,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Post preview comment
-        if: always() && steps.detect.outputs.changed == 'true'
+        if: always() && needs.detect.outputs.changed == 'true'
         uses: actions/github-script@v8
         with:
           script: |

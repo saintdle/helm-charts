@@ -1,14 +1,5 @@
 name: Release chart
 
-# Runs when a chart change lands on main (i.e. a PR is merged). It performs the
-# publish steps automatically:
-#   1. Package the chart.
-#   2. Create a GitHub release + tag (pacman-<version>) with the .tgz attached.
-#   3. Publish the .tgz and a refreshed index.yaml to the gh-pages branch, which
-#      GitHub Pages serves as the Helm repository.
-# The job is idempotent: if a release for the current Chart.yaml version already
-# exists it does nothing, so re-runs and unrelated pushes are safe.
-
 on:
   push:
     branches: [main]
@@ -19,7 +10,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: chart-release
+  group: pacman-chart-publisher
   cancel-in-progress: false
 
 env:
@@ -30,12 +21,23 @@ env:
 jobs:
   release:
     name: release
+    if: vars.PACMAN_CHART_PUBLISHER_AUTHORITY != 'pacman'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout main
+      - name: Checkout the triggering commit
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      - name: Confirm the legacy publisher still owns the chart
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN }}
+        run: node tools/chart-authority.mjs helm-charts
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       - name: Set up Helm
         uses: azure/setup-helm@v5
@@ -46,107 +48,21 @@ jobs:
         id: chart
         run: |
           set -euo pipefail
-          name=$(yq '.name' "$CHART_DIR/Chart.yaml")
-          version=$(yq '.version' "$CHART_DIR/Chart.yaml")
           {
-            echo "name=$name"
-            echo "version=$version"
-            echo "tag=${name}-${version}"
-            echo "tgz=${name}-${version}.tgz"
+            echo "name=$(yq '.name' "$CHART_DIR/Chart.yaml")"
+            echo "version=$(yq '.version' "$CHART_DIR/Chart.yaml")"
+            echo "app_version=$(yq -r '.appVersion' "$CHART_DIR/Chart.yaml")"
+            echo "image_digest=$(yq -r '.image.digest' "$CHART_DIR/values.yaml")"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Skip if already released
-        id: guard
+      - name: Repair and verify chart publication
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          tag="${{ steps.chart.outputs.tag }}"
-          if gh release view "$tag" >/dev/null 2>&1 \
-            || git ls-remote --tags origin "refs/tags/$tag" | grep -q .; then
-            echo "already=true" >> "$GITHUB_OUTPUT"
-            echo "Release $tag already exists; nothing to publish."
-          else
-            echo "already=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Package chart
-        if: steps.guard.outputs.already == 'false'
-        run: |
-          set -euo pipefail
-          mkdir -p .cr-release-packages
-          helm package "$CHART_DIR" -d .cr-release-packages
-
-      - name: Create GitHub release
-        if: steps.guard.outputs.already == 'false'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          tag="${{ steps.chart.outputs.tag }}"
-          version="${{ steps.chart.outputs.version }}"
-          tgz=".cr-release-packages/${{ steps.chart.outputs.tgz }}"
-          notes=$(mktemp)
-          {
-            echo "Pacman Helm chart **${version}**."
-            echo ""
-            echo "### Install"
-            echo '```sh'
-            echo "helm repo add saintdle ${PAGES_URL}"
-            echo "helm repo update"
-            echo "helm install pacman saintdle/pacman --version ${version}"
-            echo '```'
-          } > "$notes"
-          gh release create "$tag" "$tgz" \
-            --title "pacman ${version}" \
-            --notes-file "$notes"
-
-      - name: Publish to gh-pages
-        if: steps.guard.outputs.already == 'false'
-        uses: actions/checkout@v5
-        with:
-          ref: gh-pages
-          path: .gh-pages
-
-      - name: Update Helm repository index
-        if: steps.guard.outputs.already == 'false'
-        run: |
-          set -euo pipefail
-          version="${{ steps.chart.outputs.version }}"
-          tgz="${{ steps.chart.outputs.tgz }}"
-          cp ".cr-release-packages/${tgz}" ".gh-pages/${tgz}"
-          helm repo index .gh-pages --url "$PAGES_URL" --merge .gh-pages/index.yaml
-          cd .gh-pages
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "${tgz}" index.yaml
-          git commit -m "Publish pacman ${version} [skip ci]"
-          git push origin gh-pages
-
-      - name: Dispatch Kubernetes promotion
-        env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_AUTOMATION_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN }}
-          APP_VERSION: ${{ steps.chart.outputs.version }}
-        run: |
-          set -euo pipefail
-          chart_app_version=$(yq -r '.appVersion' "$CHART_DIR/Chart.yaml")
-          image_digest=$(yq -r '.image.digest' "$CHART_DIR/values.yaml")
-          test "$chart_app_version" != "null"
-          test "$image_digest" != "null"
-          test -n "$RELEASE_AUTOMATION_TOKEN" || {
-            echo "RELEASE_AUTOMATION_TOKEN is required to promote pacman-for-k8s" >&2
-            exit 1
-          }
-          payload=$(jq -n \
-            --arg app_version "$chart_app_version" \
-            --arg chart_version "$APP_VERSION" \
-            --arg image_digest "$image_digest" \
-            --arg source_commit "$GITHUB_SHA" \
-            '{event_type: "pacman-chart-release", client_payload: {app_version: $app_version, chart_version: $chart_version, image_digest: $image_digest, source_commit: $source_commit}}')
-          curl --fail-with-body --silent --show-error \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $RELEASE_AUTOMATION_TOKEN" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/repos/saintdle/pacman-for-k8s/dispatches \
-            -d "$payload"
+          CHART_NAME: ${{ steps.chart.outputs.name }}
+          CHART_VERSION: ${{ steps.chart.outputs.version }}
+          APP_VERSION: ${{ steps.chart.outputs.app_version }}
+          IMAGE_DIGEST: ${{ steps.chart.outputs.image_digest }}
+          CHART_SOURCE_REPOSITORY: ${{ github.repository }}
+          CHART_SOURCE_COMMIT: ${{ github.sha }}
+        run: node tools/chart-publication.mjs
