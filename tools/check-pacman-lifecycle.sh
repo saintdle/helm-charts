@@ -16,6 +16,48 @@ case "$database" in
   *) echo "unsupported database backend: $database" >&2; exit 2 ;;
 esac
 
+qualify_mongo_ci_runtime() {
+  [[ "$database" == mongo ]] || return 0
+
+  local runner_os="${ImageOS:-}"
+  local runner_image="${ImageVersion:-}"
+  local kernel_release
+  local version_signature
+  kernel_release="$(uname -r 2>/dev/null || true)"
+  version_signature="$(cat /proc/version_signature 2>/dev/null || true)"
+
+  local shown_runner_os="$runner_os"
+  local shown_runner_image="$runner_image"
+  local shown_kernel="$kernel_release"
+  local shown_signature="$version_signature"
+  [[ "$shown_runner_os" =~ ^[A-Za-z0-9._-]+$ ]] || shown_runner_os='<invalid>'
+  [[ "$shown_runner_image" =~ ^[A-Za-z0-9._-]+$ ]] || shown_runner_image='<invalid>'
+  [[ "$shown_kernel" =~ ^[A-Za-z0-9._+~-]+$ ]] || shown_kernel='<invalid>'
+  [[ "$shown_signature" =~ ^[A-Za-z0-9._+~-]+\ [A-Za-z0-9._+~-]+(\ [A-Za-z0-9._+~-]+)?$ ]] || shown_signature='<invalid>'
+  echo "Mongo CI runtime identity: runner=$shown_runner_os image=$shown_runner_image kernel=$shown_kernel version_signature=$shown_signature" >&2
+
+  if [[ -z "$runner_os" || -z "$runner_image" || -z "$kernel_release" || -z "$version_signature" ]]; then
+    echo "missing Mongo CI runner identity; ImageOS, ImageVersion, uname -r, and /proc/version_signature are required" >&2
+    return 1
+  fi
+  if [[ "$runner_os" != ubuntu22 || ! "$runner_image" =~ ^[0-9]{8}\.[0-9]+(\.[0-9]+)?$ ]]; then
+    echo "unsupported Mongo CI runner image identity; expected ubuntu22 with a recorded ImageVersion" >&2
+    return 1
+  fi
+  if [[ ! "$kernel_release" =~ ^6\.8\.[A-Za-z0-9._+~-]+$ ]]; then
+    echo "unsupported Mongo CI kernel; this Mongo lifecycle requires the qualified Ubuntu 22.04 Linux 6.8 runtime" >&2
+    return 1
+  fi
+  if [[ ! "$version_signature" =~ ^Ubuntu\ 6\.8\.[A-Za-z0-9._+~-]+(\ [0-9][A-Za-z0-9._+~-]*)?$ ]]; then
+    echo "unsupported Mongo CI kernel signature; /proc/version_signature must identify Ubuntu Linux 6.8" >&2
+    return 1
+  fi
+
+  echo "Mongo CI runtime qualified: runner=$runner_os image=$runner_image kernel=$kernel_release version_signature=$version_signature" >&2
+}
+
+qualify_mongo_ci_runtime
+
 existing_secret_key="$database.existingSecret"
 rendered_existing_secret="$(helm template lifecycle-existing-secret "$chart_dir" \
   --namespace lifecycle-contract --set "database=$database" \
@@ -55,9 +97,71 @@ watch_pid=""
 current_namespace=""
 release_fullname=""
 
+report_database_metadata() {
+  local namespace="$1"
+  [[ "$database" == mongo ]] || return 0
+
+  echo "--- bounded Mongo database metadata: namespace $namespace ---" >&2
+  local pod_json
+  local metadata
+  if pod_json="$(kubectl --kubeconfig "$tmp_dir/kubeconfig" --request-timeout=15s \
+    -n "$namespace" get pods \
+    -l "app.kubernetes.io/instance=$namespace,app.kubernetes.io/name=mongodb" -o json 2>/dev/null)"; then
+    if metadata="$(printf '%s\n' "$pod_json" | python3 -c '
+import json
+import sys
+
+pods = json.load(sys.stdin).get("items", [])
+records = []
+for pod in pods:
+    pod_name = pod.get("metadata", {}).get("name", "")
+    containers = pod.get("spec", {}).get("containers", [])
+    statuses = {
+        item.get("name"): item
+        for item in pod.get("status", {}).get("containerStatuses", [])
+    }
+    for container in containers:
+        if container.get("name") != "mongo":
+            continue
+        status = statuses.get("mongo", {})
+        records.append({
+            "pod": pod_name,
+            "container": "mongo",
+            "image": container.get("image", ""),
+            "image_id": status.get("imageID", ""),
+        })
+        if len(records) == 3:
+            break
+    if len(records) == 3:
+        break
+if not records or any(not item["pod"] or not item["image"] or not item["image_id"] for item in records):
+    sys.exit(1)
+for item in records:
+    print(json.dumps(item, sort_keys=True))
+' 2>/dev/null)"; then
+      printf 'mongo_container_metadata=%s\n' "$metadata" >&2
+    else
+      echo "mongo_container_metadata=<unavailable>" >&2
+    fi
+  else
+    echo "mongo_container_metadata=<unavailable>" >&2
+  fi
+
+  local server_version=""
+  if server_version="$(kubectl --kubeconfig "$tmp_dir/kubeconfig" --request-timeout=15s \
+    -n "$namespace" exec "deployment/${namespace}-pacman-mongo" -- /bin/sh -ec \
+    'mongosh --quiet --username "$APP_DB_USER" --password "$APP_DB_PWD" --authenticationDatabase "$APP_DB_NAME" "$APP_DB_NAME" --eval "db.version()"' 2>/dev/null)" \
+    && [[ "$server_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([._+-][A-Za-z0-9._+-]+)?$ ]]; then
+    echo "mongo_server_version=$server_version" >&2
+  else
+    echo "mongo_server_version=<unavailable>" >&2
+  fi
+}
+
 dump_diagnostics() {
   [[ -n "$current_namespace" ]] || return 0
   echo "--- bounded lifecycle diagnostics: namespace $current_namespace ---" >&2
+  report_database_metadata "$current_namespace" || true
   kubectl --kubeconfig "$tmp_dir/kubeconfig" -n "$current_namespace" \
     get pods,deployments,services,jobs,persistentvolumeclaims -o wide >&2 2>/dev/null || true
   kubectl --kubeconfig "$tmp_dir/kubeconfig" -n "$current_namespace" \
@@ -314,6 +418,9 @@ wait_workloads() {
   local database_deployment="${fullname}-${database}"
   kubectl --kubeconfig "$tmp_dir/kubeconfig" -n "$namespace" \
     rollout status "deployment/$database_deployment" --timeout=240s
+  if [[ "$database" == mongo ]]; then
+    report_database_metadata "$namespace"
+  fi
   local pvc_name="${database_deployment}"
   kubectl --kubeconfig "$tmp_dir/kubeconfig" -n "$namespace" \
     wait --for=jsonpath='{.status.phase}'=Bound "pvc/$pvc_name" --timeout=180s

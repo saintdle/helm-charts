@@ -222,7 +222,13 @@ jobs:
     name: lifecycle (${{ matrix.database }})
     needs: [detect, candidate-identity]
     if: needs.detect.outputs.changed == 'true'
-    runs-on: ubuntu-latest
+    # Temporary Mongo compatibility bridge: the current Ubuntu 22.04 image
+    # documents Linux 6.8, which is qualified by the lifecycle preflight below.
+    # The runner label alone is not proof; Mongo requires the captured host and
+    # image identity to match. Migrate before Ubuntu 22.04 support ends on
+    # 2027-04-17: https://github.com/actions/runner-images/issues/14254
+    # Current image details: https://raw.githubusercontent.com/actions/runner-images/main/images/ubuntu/Ubuntu2204-Readme.md
+    runs-on: ${{ matrix.database == 'mongo' && 'ubuntu-22.04' || 'ubuntu-latest' }}
     timeout-minutes: 45
     strategy:
       fail-fast: false

@@ -31,6 +31,33 @@ function workflowRunBlock(name) {
   return script.join('\n').trimEnd();
 }
 
+function shellFunction(name, source = lifecycle) {
+  const start = source.indexOf(`${name}() {`);
+  assert.notEqual(start, -1, `lifecycle helper must define ${name}`);
+  const end = source.indexOf('\n}\n', start);
+  assert.notEqual(end, -1, `${name} must be a complete shell function`);
+  return source.slice(start, end + 2);
+}
+
+function writeMongoRuntimeStubs(fakeBin) {
+  const uname = path.join(fakeBin, 'uname');
+  writeFileSync(uname, '#!/bin/sh\nprintf "%s\\n" "$FIXTURE_KERNEL"\n');
+  chmodSync(uname, 0o755);
+  const cat = path.join(fakeBin, 'cat');
+  writeFileSync(cat, `#!/bin/sh
+if [ "$1" = /proc/version_signature ]; then
+  [ -n "${'${FIXTURE_SIGNATURE:-}'}" ] || exit 1
+  printf '%s\\n' "$FIXTURE_SIGNATURE"
+  exit 0
+fi
+exec /bin/cat "$@"
+`);
+  chmodSync(cat, 0o755);
+  const helm = path.join(fakeBin, 'helm');
+  writeFileSync(helm, '#!/bin/sh\nexit 0\n');
+  chmodSync(helm, 0o755);
+}
+
 test('required manifests aggregates all chart contracts and both database lifecycle lanes', () => {
   assert.match(workflow, /^  manifests:\n[\s\S]*?needs: \[detect, chart-contracts, candidate-identity, lifecycle, promotion-state-regression\]/m);
   assert.match(workflow, /^  manifests:\n[\s\S]*?if: always\(\)/m);
@@ -46,6 +73,148 @@ test('required manifests aggregates all chart contracts and both database lifecy
 
   assert.match(workflow, /database: \[mongo, postgres\]/);
   assert.match(workflow, /run: bash tools\/check-pacman-lifecycle\.sh "\$CHART_DIR" pacman-source "\$DATABASE" "\$EXPECTED_SOURCE_SHA"/);
+});
+
+test('Mongo lifecycle uses the temporary Ubuntu 22.04 compatibility bridge', () => {
+  const lifecycleJob = /^  lifecycle:\n([\s\S]*?)(?=^  manifests:)/m.exec(workflow)?.[0];
+
+  assert.ok(lifecycleJob, 'Chart CI must define the lifecycle job');
+  assert.match(lifecycleJob, /runs-on: \$\{\{ matrix\.database == 'mongo' && 'ubuntu-22\.04' \|\| 'ubuntu-latest' \}\}/);
+  assert.match(workflow, /runner-images\/issues\/14254/);
+  assert.match(workflow, /Ubuntu2204-Readme\.md/);
+  assert.match(workflow, /2027-04-17/);
+  assert.match(lifecycleJob, /database: \[mongo, postgres\]/);
+});
+
+test('Mongo lifecycle preflight qualifies actual runner identity and rejects unsupported or missing identity before Docker', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'pacman-lifecycle-runtime-'));
+  try {
+    const source = path.join(directory, 'source');
+    const fakeBin = path.join(directory, 'bin');
+    const dockerTrace = path.join(directory, 'docker-called');
+    mkdirSync(source);
+    mkdirSync(fakeBin);
+    execFileSync('git', ['init', '--quiet', source]);
+    writeFileSync(path.join(source, 'candidate.txt'), 'promoted candidate\n');
+    execFileSync('git', ['-C', source, 'add', 'candidate.txt']);
+    execFileSync('git', ['-C', source, 'commit', '--quiet', '-m', 'candidate'], {
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'Chart CI test',
+        GIT_AUTHOR_EMAIL: 'chart-ci-test@example.invalid',
+        GIT_COMMITTER_NAME: 'Chart CI test',
+        GIT_COMMITTER_EMAIL: 'chart-ci-test@example.invalid',
+      },
+    });
+    const sourceSha = execFileSync('git', ['-C', source, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+    writeMongoRuntimeStubs(fakeBin);
+    const docker = path.join(fakeBin, 'docker');
+    writeFileSync(docker, '#!/bin/sh\nprintf called >> "$DOCKER_TRACE"\nprintf unsupported\n');
+    chmodSync(docker, 0o755);
+
+    const run = (fixture) => {
+      const env = {
+        ...process.env,
+        DOCKER_TRACE: dockerTrace,
+        FIXTURE_KERNEL: fixture.kernel,
+        FIXTURE_SIGNATURE: fixture.signature,
+        ImageOS: 'ubuntu22',
+        PATH: `${fakeBin}${path.delimiter}${process.env.PATH}`,
+      };
+      if (fixture.imageVersion === undefined) delete env.ImageVersion;
+      else env.ImageVersion = fixture.imageVersion;
+      return spawnSync('bash', [
+        new URL('./check-pacman-lifecycle.sh', import.meta.url).pathname,
+        'charts/pacman', source, 'mongo', sourceSha,
+      ], { cwd: repositoryRoot, env, encoding: 'utf8' });
+    };
+
+    const supported = run({
+      kernel: '6.8.0-1064-azure',
+      signature: 'Ubuntu 6.8.0-1064.65~22.04.1-azure 6.8.0-1064.65~22.04.1',
+      imageVersion: '20261023.322.3',
+    });
+    assert.notEqual(supported.status, 0, 'the fixture intentionally stops at the Docker architecture boundary');
+    assert.match(`${supported.stdout}${supported.stderr}`, /Mongo CI runtime qualified/);
+    assert.match(`${supported.stdout}${supported.stderr}`, /runner=ubuntu22 image=20261023\.322\.3 kernel=6\.8\.0-1064-azure/);
+    assert.ok(existsSync(dockerTrace), 'a positively qualified runtime may proceed to Docker');
+
+    rmSync(dockerTrace, { force: true });
+    const unsupported = run({
+      kernel: '6.19.0-1-azure',
+      signature: 'Ubuntu 6.19.0-1-azure 6.19.0-1',
+      imageVersion: '20261023.322.3',
+    });
+    assert.notEqual(unsupported.status, 0);
+    assert.match(`${unsupported.stdout}${unsupported.stderr}`, /unsupported Mongo CI kernel/);
+    assert.ok(!existsSync(dockerTrace), 'an unsupported runtime must fail before Docker');
+
+    const missing = run({
+      kernel: '6.8.0-1064-azure',
+      signature: '',
+    });
+    assert.notEqual(missing.status, 0);
+    assert.match(`${missing.stdout}${missing.stderr}`, /missing Mongo CI runner identity/);
+    assert.ok(!existsSync(dockerTrace), 'missing runner identity must fail before Docker');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('Mongo diagnostics emit only actual database image identity and server version metadata', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'pacman-lifecycle-mongo-metadata-'));
+  try {
+    const fakeBin = path.join(directory, 'bin');
+    mkdirSync(fakeBin);
+    const kubectl = path.join(fakeBin, 'kubectl');
+    writeFileSync(kubectl, `#!/bin/sh
+case " $* " in
+  *" get pods "*) printf '%s\\n' "$MONGO_PODS_JSON" ;;
+  *" exec "*) printf '%s\\n' "$MONGO_SERVER_VERSION" ;;
+  *) exit 64 ;;
+esac
+`);
+    chmodSync(kubectl, 0o755);
+
+    const functionText = shellFunction('report_database_metadata');
+    const pods = {
+      items: [{
+        metadata: { name: 'pcl-mongo-default-pacman-mongo-abc' },
+        spec: { containers: [{ name: 'mongo', image: 'docker.io/library/mongo:8.0' }] },
+        status: { containerStatuses: [{
+          name: 'mongo',
+          imageID: `docker-pullable://docker.io/library/mongo@sha256:${'a'.repeat(64)}`,
+        }] },
+      }],
+    };
+    const result = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'database=mongo',
+      'tmp_dir="$KUBECTL_TMP"',
+      functionText,
+      'report_database_metadata pcl-mongo-default',
+    ].join('\n')], {
+      env: {
+        ...process.env,
+        KUBECTL_TMP: directory,
+        PATH: `${fakeBin}${path.delimiter}${process.env.PATH}`,
+        MONGO_PODS_JSON: JSON.stringify(pods),
+        MONGO_SERVER_VERSION: '8.0.18',
+      },
+      encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /docker\.io\/library\/mongo:8\.0/);
+    assert.match(result.stderr, new RegExp(`image_id": ".*sha256:${'a'.repeat(64)}`));
+    assert.match(result.stderr, /mongo_server_version=8\.0\.18/);
+    assert.doesNotMatch(result.stderr, /ci-pacman-pass|ci-root-pass|APP_DB_PWD|Secret/);
+    assert.match(lifecycle, /dump_diagnostics\(\) \{[\s\S]*report_database_metadata/);
+    assert.match(shellFunction('wait_workloads'), /report_database_metadata/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('required manifests runs artifact and publication transport suites when helpers or publisher workflow change', () => {
@@ -130,6 +299,7 @@ test('lifecycle candidate identity accepts the promoted commit and rejects a mis
       },
     });
     const sourceSha = execFileSync('git', ['-C', source, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    writeMongoRuntimeStubs(fakeBin);
     const dockerStub = path.join(fakeBin, 'docker');
     writeFileSync(dockerStub, '#!/bin/sh\nprintf called >> "$DOCKER_TRACE"\nprintf unsupported\n');
     chmodSync(dockerStub, 0o755);
@@ -137,6 +307,10 @@ test('lifecycle candidate identity accepts the promoted commit and rejects a mis
     const env = {
       ...process.env,
       DOCKER_TRACE: dockerTrace,
+      FIXTURE_KERNEL: '6.8.0-1064-azure',
+      FIXTURE_SIGNATURE: 'Ubuntu 6.8.0-1064.65~22.04.1-azure 6.8.0-1064.65~22.04.1',
+      ImageOS: 'ubuntu22',
+      ImageVersion: '20261023.322.3',
       PATH: `${fakeBin}${path.delimiter}${process.env.PATH}`,
     };
     const run = (expectedSha) => spawnSync('bash', [
