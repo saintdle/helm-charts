@@ -329,6 +329,103 @@ test('public package and index are retried until both become available', async (
   assert.equal(api.dispatches.length, 1);
 });
 
+test('default public readiness wait covers delayed Pages availability before notification', async () => {
+  const api = new PublicationApi();
+  const becomesAvailableAt = 120_000;
+  let fakeTime = 0;
+  let notificationTime = null;
+  api.now = () => fakeTime;
+  api.sleep = async (duration) => { fakeTime += duration; };
+  api.dispatchNotification = async (payload) => {
+    notificationTime = fakeTime;
+    api.dispatches.push(structuredClone(payload));
+  };
+  api.readPublicPublication = async () => {
+    api.calls.publicRead += 1;
+    if (fakeTime < becomesAvailableAt) return { packageBytes: null, index: null };
+    return {
+      packageBytes: Buffer.from(api.pages.packageBytes),
+      index: structuredClone(api.pages.index),
+    };
+  };
+
+  const result = await publishChart({ identity, api });
+
+  assert.equal(result.packageSha256, checksum(api.assetBytes));
+  assert.ok(api.calls.publicRead > 5, 'the default must outlast the previous five-attempt window');
+  assert.ok(fakeTime >= becomesAvailableAt);
+  assert.ok(notificationTime >= becomesAvailableAt, 'notification must wait for exact public availability');
+  assert.equal(api.dispatches.length, 1);
+});
+
+test('default public readiness wait checks the final interval despite modest timer drift', async () => {
+  const api = new PublicationApi();
+  const becomesAvailableAt = 599_000;
+  let fakeTime = 0;
+  let notificationTime = null;
+  api.now = () => fakeTime;
+  api.sleep = async (duration) => {
+    fakeTime += duration;
+    if (fakeTime === 600_000) fakeTime += 750;
+  };
+  api.dispatchNotification = async (payload) => {
+    notificationTime = fakeTime;
+    api.dispatches.push(structuredClone(payload));
+  };
+  api.readPublicPublication = async () => {
+    api.calls.publicRead += 1;
+    if (fakeTime < becomesAvailableAt) return { packageBytes: null, index: null };
+    return {
+      packageBytes: Buffer.from(api.pages.packageBytes),
+      index: structuredClone(api.pages.index),
+    };
+  };
+
+  const result = await publishChart({ identity, api });
+
+  assert.equal(result.packageSha256, checksum(api.assetBytes));
+  assert.equal(api.calls.publicRead, 61);
+  assert.equal(fakeTime, 600_750);
+  assert.ok(notificationTime >= becomesAvailableAt, 'notification must follow the final exact public check');
+  assert.equal(api.dispatches.length, 1);
+});
+
+test('public readiness wait fails closed at its deadline without notification', async () => {
+  const api = new PublicationApi();
+  let fakeTime = 0;
+  api.now = () => fakeTime;
+  api.sleep = async (duration) => { fakeTime += duration; };
+  api.readPublicPublication = async () => {
+    api.calls.publicRead += 1;
+    return { packageBytes: null, index: null };
+  };
+
+  await assert.rejects(
+    publishChart({ identity, api, retryDelayMs: 10000, publicWaitMs: 30000 }),
+    /failed verification after 4 attempts/,
+  );
+  assert.equal(fakeTime, 30000);
+  assert.equal(api.calls.publicRead, 4);
+  assert.equal(api.dispatches.length, 0);
+});
+
+test('invalid readiness bounds fail before publication side effects', async () => {
+  for (const options of [
+    { publicAttempts: 0 },
+    { publicAttempts: 62 },
+    { retryDelayMs: -1 },
+    { retryDelayMs: Number.POSITIVE_INFINITY },
+    { publicWaitMs: 0 },
+    { publicWaitMs: 600001 },
+  ]) {
+    const api = new PublicationApi();
+    await assert.rejects(publishChart({ identity, api, ...options }), /publicAttempts|retryDelayMs|publicWaitMs/);
+    assert.equal(api.calls.tagCreate, 0);
+    assert.equal(api.calls.releaseCreate, 0);
+    assert.equal(api.dispatches.length, 0);
+  }
+});
+
 test('generated package publication fails closed before effects when exact-SHA candidate validation is absent or mismatched', async () => {
   const generatedIdentity = {
     ...identity,
