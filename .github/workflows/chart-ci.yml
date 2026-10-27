@@ -3,7 +3,7 @@ name: Chart CI
 # Runs on every pull request so the two required checks always report a status
 # (a required check that never runs would block the PR forever). version-gate
 # and manifests remain the required checks. manifests aggregates the static
-# chart contracts and exact-candidate lifecycle jobs before rendering a preview.
+# chart contracts, exact-candidate lifecycle jobs, and promotion-state regression before rendering a preview.
 #   * version-gate — fails unless charts/pacman/Chart.yaml `version` is bumped
 #     to a new, unreleased value when the chart changes. This is the "new version
 #     must be declared" flag that must be green before the PR can merge.
@@ -95,6 +95,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.detect.outputs.changed }}
+      promotion_state_changed: ${{ steps.detect.outputs.promotion_state_changed }}
     steps:
       - name: Checkout PR
         uses: actions/checkout@v5
@@ -111,6 +112,30 @@ jobs:
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
+          if git diff --quiet FETCH_HEAD -- pacman-promotion-state.json tools/pacman-promotion.test.mjs .github/workflows/chart-ci.yml; then
+            echo "promotion_state_changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "promotion_state_changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  promotion-state-regression:
+    name: promotion-state-regression
+    needs: detect
+    if: needs.detect.outputs.promotion_state_changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR candidate
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test promotion state identity
+        run: node --test tools/pacman-promotion.test.mjs
 
   chart-contracts:
     name: chart-contracts
@@ -267,7 +292,7 @@ jobs:
 
   manifests:
     name: manifests
-    needs: [detect, chart-contracts, candidate-identity, lifecycle]
+    needs: [detect, chart-contracts, candidate-identity, lifecycle, promotion-state-regression]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -284,9 +309,29 @@ jobs:
           CONTRACTS_RESULT: ${{ needs.chart-contracts.result }}
           CANDIDATE_RESULT: ${{ needs.candidate-identity.result }}
           LIFECYCLE_RESULT: ${{ needs.lifecycle.result }}
+          PROMOTION_STATE_CHANGED: ${{ needs.detect.outputs.promotion_state_changed }}
+          PROMOTION_STATE_RESULT: ${{ needs['promotion-state-regression'].result }}
         run: |
           set -euo pipefail
           [[ "$DETECT_RESULT" == success ]] || { echo "chart-change detection did not succeed" >&2; exit 1; }
+          case "$PROMOTION_STATE_CHANGED" in
+            true)
+              [[ "$PROMOTION_STATE_RESULT" == success ]] || {
+                echo "promotion-state regression completed as $PROMOTION_STATE_RESULT" >&2
+                exit 1
+              }
+              ;;
+            false)
+              [[ "$PROMOTION_STATE_RESULT" == skipped ]] || {
+                echo "unchanged promotion state unexpectedly ran regression as $PROMOTION_STATE_RESULT" >&2
+                exit 1
+              }
+              ;;
+            *)
+              echo "promotion-state change detection did not publish a boolean result" >&2
+              exit 1
+              ;;
+          esac
           case "$CHART_CHANGED" in
             true)
               for lane in CONTRACTS_RESULT CANDIDATE_RESULT LIFECYCLE_RESULT; do

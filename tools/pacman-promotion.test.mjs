@@ -185,3 +185,25 @@ test('schema-v1 app record and metadata must agree on checksum and identity', ()
     sha256: '5e8c313be3fca5718168b8a2ad669bd56d49935d2d4f54c4315561124777db79', format: 'app-release-v1',
   }), /does not pin/);
 });
+
+test('checked-in promotion state matches the chart source and published chart package', () => {
+  const state = JSON.parse(readFileSync(new URL('../pacman-promotion-state.json', import.meta.url), 'utf8'));
+  const chart = readFileSync(new URL('../charts/pacman/Chart.yaml', import.meta.url), 'utf8');
+  const values = readFileSync(new URL('../charts/pacman/values.yaml', import.meta.url), 'utf8');
+  const field = (source, name) => {
+    const match = new RegExp(`^${name}:\\s*"?([^"\\s]+)"?\\s*$`, 'm').exec(source);
+    assert.ok(match, `chart source must contain ${name}`);
+    return match[1];
+  };
+  const valuesDigest = /^image:\s*\n(?:[ \t].*\n)*?[ \t]+digest:\s*"?(sha256:[a-f0-9]{64})"?/m.exec(values)?.[1];
+
+  assert.equal(state.app.version, field(chart, 'appVersion'), 'promotion app version must match Chart.yaml');
+  assert.equal(state.app.image_manifest_list_digest, valuesDigest, 'promotion app digest must match values.yaml');
+  assert.equal(state.chart.version, field(chart, 'version'), 'promotion chart version must match Chart.yaml');
+  assert.equal(state.chart.format, 'legacy-chart-package-v0');
+  assert.equal(state.chart.release_tag, 'pacman-0.7.18');
+  assert.equal(state.chart.package_reference,
+    'https://github.com/saintdle/helm-charts/releases/download/pacman-0.7.18/pacman-0.7.18.tgz');
+  assert.equal(state.chart.package_sha256, '68f51615bc494f3f5f58a55e7550b156eed3374947557634c875a4affb0e29bd');
+  assert.deepEqual(state.chart.missing_evidence, ['chart_release_record']);
+});
