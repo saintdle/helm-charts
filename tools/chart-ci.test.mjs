@@ -10,7 +10,7 @@ const lifecycle = readFileSync(new URL('./check-pacman-lifecycle.sh', import.met
 const repositoryRoot = path.resolve(new URL('..', import.meta.url).pathname);
 
 test('required manifests aggregates all chart contracts and both database lifecycle lanes', () => {
-  assert.match(workflow, /^  manifests:\n[\s\S]*?needs: \[detect, chart-contracts, candidate-identity, lifecycle\]/m);
+  assert.match(workflow, /^  manifests:\n[\s\S]*?needs: \[detect, chart-contracts, candidate-identity, lifecycle, promotion-state-regression\]/m);
   assert.match(workflow, /^  manifests:\n[\s\S]*?if: always\(\)/m);
 
   for (const contract of [
@@ -24,6 +24,16 @@ test('required manifests aggregates all chart contracts and both database lifecy
 
   assert.match(workflow, /database: \[mongo, postgres\]/);
   assert.match(workflow, /run: bash tools\/check-pacman-lifecycle\.sh "\$CHART_DIR" pacman-source "\$DATABASE" "\$EXPECTED_SOURCE_SHA"/);
+});
+
+test('promotion-state regression selects both promotion and Chart CI contract tests', () => {
+  const paths = /if git diff --quiet FETCH_HEAD -- ([^\n]+); then\n\s+echo "promotion_state_changed=false"/.exec(workflow)?.[1];
+
+  assert.ok(paths, 'Chart CI must detect changes that affect promotion-state regression');
+  assert.match(paths, /tools\/pacman-promotion\.test\.mjs/);
+  assert.match(paths, /tools\/chart-ci\.test\.mjs/);
+  assert.match(workflow, /promotion-state-regression:\n[\s\S]*?if: needs\.detect\.outputs\.promotion_state_changed == 'true'/);
+  assert.match(workflow, /run: node --test tools\/pacman-promotion\.test\.mjs tools\/chart-ci\.test\.mjs/);
 });
 
 test('lifecycle candidate identity accepts the promoted commit and rejects a mismatch before Docker', () => {
