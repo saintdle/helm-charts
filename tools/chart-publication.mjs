@@ -519,7 +519,7 @@ export function createLiveAdapter(inputIdentity, dependencies = {}) {
       const assets = release.assets.filter((asset) => asset.name === filename);
       if (assets.length > 1) fail(`release ${tag} has multiple assets named ${filename}`);
       if (!assets.length) return null;
-      const response = await fetch(assets[0].url, { headers: { Accept: 'application/octet-stream', Authorization: `Bearer ${token}` } });
+      const response = await fetchRequest(assets[0].url, { headers: { Accept: 'application/octet-stream', Authorization: `Bearer ${token}` } });
       if (!response.ok) throw new Error(`could not download ${filename} from release ${tag}: HTTP ${response.status}`);
       return Buffer.from(await response.arrayBuffer());
     },

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -532,6 +532,142 @@ test('production adapter propagates lookup and listing authorization or server f
     await assert.rejects(api.getRelease('pacman-0.7.18'), new RegExp(`GitHub API ${scenario.expectedStatus}`));
     assert.equal(requested.length, scenario.requests);
   }
+});
+
+test('production adapter recovers an empty existing draft through upload, publish, Pages verification, then notification', async () => {
+  const tag = `${identity.name}-${identity.version}`;
+  const filename = `${tag}.tgz`;
+  const assetUrl = 'https://api.github.com/repos/saintdle/helm-charts/releases/assets/99';
+  const packageBytes = Buffer.from('exact pinned package bytes');
+  const events = [];
+  const release = {
+    id: 77,
+    tag_name: tag,
+    draft: true,
+    prerelease: false,
+    body: [
+      `Pac-Man Helm chart **${identity.version}**.`, '',
+      `Source repository: https://github.com/${identity.sourceRepository}`,
+      `Source commit: ${identity.sourceCommit}`,
+      `Distribution repository: https://github.com/${identity.distributionRepository}`,
+      `Distribution commit: ${identity.distributionCommit}`,
+      `Chart version: ${identity.version}`,
+      `Package: ${filename}`,
+    ].join('\n'),
+    assets: [],
+  };
+  let packageCreated = false;
+  let releaseCreateAttempted = false;
+  let uploadedBytes = null;
+  let pagesPackage = null;
+  let pagesIndex = null;
+  let pagesPublished = false;
+
+  const { identity: normalizedIdentity, api } = createPublicationRuntime(identity, {
+    token: 'fixture-token',
+    dispatchToken: 'fixture-dispatch-token',
+    run(command, args) {
+      if (command === 'git' && args[0] === 'ls-remote') return `${identity.distributionCommit}\trefs/tags/${tag}`;
+      if (command === 'git' && args[0] === 'rev-parse' && args[1] === 'HEAD') return identity.distributionCommit;
+      if (command === 'git' && args[0] === 'fetch') return '';
+      if (command === 'git' && args[0] === 'worktree' && args[1] === 'add') { mkdirSync(args[3], { recursive: true }); return ''; }
+      if (command === 'git' && args[0] === '-C' && args[2] === 'status') return ' M index.yaml';
+      if (command === 'git' && args[0] === '-C' && args[2] === 'push') { pagesPublished = true; events.push('pages-published'); return ''; }
+      if (command === 'git') return '';
+      if (command === 'helm' && args[0] === 'package') {
+        writeFileSync(join(args[3], filename), packageBytes);
+        return '';
+      }
+      if (command === 'helm' && args[0] === 'show' && args[1] === 'chart') {
+        return `name: pacman\nversion: ${identity.version}\nappVersion: "${identity.appVersion}"`;
+      }
+      if (command === 'helm' && args[0] === 'show' && args[1] === 'values') {
+        return `image:\n  digest: ${identity.imageDigest}`;
+      }
+      if (command === 'helm' && args[0] === 'repo' && args[1] === 'index') {
+        pagesPackage = readFileSync(join(args[2], filename));
+        pagesIndex = indexFor(identity, pagesPackage);
+        writeFileSync(join(args[2], 'index.yaml'), JSON.stringify(pagesIndex));
+        packageCreated = true;
+        return '';
+      }
+      throw new Error(`unexpected fixture command: ${command} ${args.join(' ')}`);
+    },
+    readGitFile(_ref, filenameRead) {
+      if (!pagesPublished) return null;
+      if (filenameRead === 'index.yaml') return Buffer.from(JSON.stringify(pagesIndex));
+      if (filenameRead === filename) return Buffer.from(pagesPackage);
+      return null;
+    },
+    parseYaml(text) {
+      if (text.startsWith('{')) return JSON.parse(text);
+      if (text.startsWith('name:')) return {
+        name: text.match(/^name:\s*(\S+)/m)?.[1],
+        version: text.match(/^version:\s*(\S+)/m)?.[1],
+        appVersion: text.match(/^appVersion:\s*["']?(\S+?)["']?\s*$/m)?.[1],
+      };
+      return { image: { digest: text.match(/^\s+digest:\s*(\S+)/m)?.[1] } };
+    },
+    fetch: async (url, options = {}) => {
+      const target = String(url);
+      const method = options.method ?? 'GET';
+      if (target.endsWith(`/releases/tags/${tag}`)) {
+        return release.draft
+          ? new Response('Not Found', { status: 404 })
+          : new Response(JSON.stringify(release), { status: 200 });
+      }
+      if (target.includes('/releases?')) return new Response(JSON.stringify([release]), { status: 200 });
+      if (target === 'https://api.github.com/repos/saintdle/helm-charts/releases' && method === 'POST') {
+        releaseCreateAttempted = true;
+        return new Response(JSON.stringify({ ...release, id: 78 }), { status: 201 });
+      }
+      if (target.startsWith('https://uploads.github.com/') && method === 'POST') {
+        assert.equal(target, `https://uploads.github.com/repos/saintdle/helm-charts/releases/${release.id}/assets?name=${filename}`);
+        uploadedBytes = Buffer.from(options.body);
+        release.assets = [{ name: filename, url: assetUrl }];
+        events.push('asset-uploaded');
+        return new Response(JSON.stringify(release.assets[0]), { status: 201 });
+      }
+      if (target === assetUrl) return new Response(packageBytes, { status: 200 });
+      if (target.endsWith(`/releases/${release.id}`) && method === 'PATCH') {
+        const patchBody = JSON.parse(options.body);
+        release.draft = false;
+        release.body = patchBody.body;
+        events.push('release-published');
+        return new Response(JSON.stringify(release), { status: 200 });
+      }
+      if (target === `${identity.pagesUrl}/index.yaml`) {
+        events.push('public-index-read');
+        return pagesPublished ? new Response(JSON.stringify(pagesIndex), { status: 200 }) : new Response('', { status: 404 });
+      }
+      if (target === normalizedIdentity.packageUrl) {
+        events.push('public-package-read');
+        return pagesPublished ? new Response(pagesPackage, { status: 200 }) : new Response('', { status: 404 });
+      }
+      if (target.endsWith('/dispatches') && method === 'POST') {
+        events.push('notification');
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(`unexpected fixture request: ${method} ${target}`);
+    },
+  });
+
+  const result = await publishChart({ identity, api, retryDelayMs: 0 });
+
+  assert.equal(result.releaseFormat, 'chart-publication-v1');
+  assert.equal(packageCreated, true);
+  assert.equal(releaseCreateAttempted, false);
+  assert.deepEqual(uploadedBytes, packageBytes);
+  assert.equal(release.draft, false);
+  assert.match(release.body, new RegExp(`Package SHA-256: ${checksum(packageBytes)}`));
+  assert.deepEqual(pagesPackage, packageBytes);
+  assert.equal(pagesIndex.entries.pacman[0].digest, checksum(packageBytes));
+  assert.ok(events.indexOf('asset-uploaded') < events.indexOf('release-published'));
+  assert.ok(events.indexOf('release-published') < events.indexOf('pages-published'));
+  assert.ok(events.indexOf('pages-published') < events.indexOf('public-index-read'));
+  assert.ok(events.indexOf('pages-published') < events.indexOf('public-package-read'));
+  assert.ok(events.indexOf('public-index-read') < events.indexOf('notification'));
+  assert.ok(events.indexOf('public-package-read') < events.indexOf('notification'));
 });
 
 test('delayed retry after draft release creation seals the exact pinned Helm package bytes', async () => {
