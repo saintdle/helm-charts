@@ -178,6 +178,18 @@ for (const stage of ['tag', 'release', 'asset', 'index', 'public-checksum', 'not
   });
 }
 
+test('existing partial draft with changed immutable identity stops before asset upload or notification', async () => {
+  const api = new PublicationApi({ failAfter: 'release' });
+  await assert.rejects(publishChart({ identity, api, retryDelayMs: 0 }), /injected failure after release/);
+  assert.equal(api.release.draft, true);
+
+  api.release.body = api.release.body.replace(identity.sourceCommit, 'f'.repeat(40));
+  await assert.rejects(publishChart({ identity, api, retryDelayMs: 0 }), /source commit does not match the immutable publication/);
+  assert.equal(api.calls.assetUpload, 0);
+  assert.equal(api.calls.pagesPublish, 0);
+  assert.equal(api.dispatches.length, 0);
+});
+
 test('repeated delivery reuses tag, release, asset, and Pages bytes while sending the same monotonic event', async () => {
   const api = new PublicationApi();
   await publishChart({ identity, api, retryDelayMs: 0 });
@@ -392,6 +404,134 @@ test('production runtime normalizes identity before the adapter reads Pages file
   assert.deepEqual(requestedFiles, ['index.yaml', normalized.filename]);
   assert.equal(pages.packageBytes.toString(), 'package fixture');
   assert.deepEqual(pages.index, { entries: {} });
+});
+
+test('production adapter discovers an existing draft through paginated releases after tag lookup returns 404', async () => {
+  const requested = [];
+  const draft = {
+    id: 42,
+    tag_name: identity.tag ?? `${identity.name}-${identity.version}`,
+    draft: true,
+    prerelease: false,
+    body: 'pinned draft identity',
+    assets: [],
+  };
+  const olderReleases = Array.from({ length: 100 }, (_, index) => ({
+    id: index + 1,
+    tag_name: `older-${index + 1}`,
+    draft: false,
+    prerelease: false,
+    assets: [],
+  }));
+  const pageTwo = 'https://api.github.com/repos/saintdle/helm-charts/releases?per_page=100&page=2';
+  const { api } = createPublicationRuntime(identity, {
+    token: 'stub-token',
+    dispatchToken: 'stub-dispatch-token',
+    fetch: async (url, options) => {
+      requested.push({ url: String(url), options });
+      if (String(url).endsWith('/releases/tags/pacman-0.7.18')) {
+        return new Response('Not Found', { status: 404 });
+      }
+      if (String(url) === 'https://api.github.com/repos/saintdle/helm-charts/releases?per_page=100&page=1') {
+        return new Response(JSON.stringify(olderReleases), {
+          status: 200,
+          headers: { Link: `<${pageTwo}>; rel="next"` },
+        });
+      }
+      if (String(url) === pageTwo) return new Response(JSON.stringify([draft]), { status: 200 });
+      throw new Error(`unexpected fixture request: ${url}`);
+    },
+  });
+
+  const release = await api.getRelease('pacman-0.7.18');
+
+  assert.deepEqual(release, draft);
+  assert.equal(requested.length, 3);
+  assert.equal(requested[1].options.headers.Authorization, 'Bearer stub-token');
+  assert.equal(requested[2].url, pageTwo);
+});
+
+test('production adapter uses the published tag endpoint for replay and does not list drafts', async () => {
+  const requested = [];
+  const published = {
+    id: 43,
+    tag_name: 'pacman-0.7.18',
+    draft: false,
+    prerelease: false,
+    body: 'published identity',
+    assets: [],
+  };
+  const { api } = createPublicationRuntime(identity, {
+    token: 'stub-token',
+    dispatchToken: 'stub-dispatch-token',
+    fetch: async (url) => {
+      requested.push(String(url));
+      if (String(url).endsWith('/releases/tags/pacman-0.7.18')) {
+        return new Response(JSON.stringify(published), { status: 200 });
+      }
+      throw new Error(`unexpected fixture request: ${url}`);
+    },
+  });
+
+  assert.deepEqual(await api.getRelease('pacman-0.7.18'), published);
+  assert.equal(requested.length, 1);
+});
+
+test('production adapter fails closed on duplicate draft matches before publication or notification', async () => {
+  const writes = [];
+  const draft = {
+    id: 44,
+    tag_name: 'pacman-0.7.18',
+    draft: true,
+    prerelease: false,
+    body: 'pinned draft identity',
+    assets: [],
+  };
+  const { api } = createPublicationRuntime(identity, {
+    token: 'stub-token',
+    dispatchToken: 'stub-dispatch-token',
+    run(command, args) {
+      assert.deepEqual([command, ...args], [
+        'git', 'ls-remote', '--tags', 'origin', 'refs/tags/pacman-0.7.18', 'refs/tags/pacman-0.7.18^{}',
+      ]);
+      return `${identity.distributionCommit}\trefs/tags/pacman-0.7.18`;
+    },
+    fetch: async (url, options = {}) => {
+      if (String(url).endsWith('/releases/tags/pacman-0.7.18')) return new Response('Not Found', { status: 404 });
+      if (String(url).includes('/releases?')) return new Response(JSON.stringify([
+        draft,
+        { ...draft, id: 45, body: 'conflicting duplicate identity' },
+      ]), { status: 200 });
+      writes.push({ url: String(url), method: options.method ?? 'GET' });
+      return new Response('{}', { status: 200 });
+    },
+  });
+
+  await assert.rejects(publishChart({ identity, api, retryDelayMs: 0 }), /multiple releases found for tag pacman-0\.7\.18/);
+  assert.deepEqual(writes, []);
+});
+
+test('production adapter propagates lookup and listing authorization or server failures', async () => {
+  for (const scenario of [
+    { tagStatus: 403, listStatus: null, expectedStatus: 403, requests: 1 },
+    { tagStatus: 404, listStatus: 503, expectedStatus: 503, requests: 2 },
+  ]) {
+    const requested = [];
+    const { api } = createPublicationRuntime(identity, {
+      token: 'stub-token',
+      dispatchToken: 'stub-dispatch-token',
+      fetch: async (url) => {
+        requested.push(String(url));
+        if (String(url).endsWith('/releases/tags/pacman-0.7.18')) {
+          return new Response('fixture failure', { status: scenario.tagStatus });
+        }
+        return new Response('fixture failure', { status: scenario.listStatus });
+      },
+    });
+
+    await assert.rejects(api.getRelease('pacman-0.7.18'), new RegExp(`GitHub API ${scenario.expectedStatus}`));
+    assert.equal(requested.length, scenario.requests);
+  }
 });
 
 test('delayed retry after draft release creation seals the exact pinned Helm package bytes', async () => {
