@@ -1,15 +1,19 @@
 # helm-charts
 
-Helm chart repository for [saintdle](https://github.com/saintdle) projects,
-served via GitHub Pages at <https://saintdle.github.io/helm-charts>.
+Generated Helm chart packages for [saintdle](https://github.com/saintdle)
+projects, served at <https://saintdle.github.io/helm-charts>. This repository
+keeps the public packages and historical Pages index. The editable Pac-Man
+chart source and artifact producer live in
+[`saintdle/pacman`](https://github.com/saintdle/pacman); platform installs and
+scenarios live in
+[`saintdle/pacman-for-k8s`](https://github.com/saintdle/pacman-for-k8s).
 
-This repository owns the public chart distribution and its historical Pages
-index. `saintdle/pacman` maintains the app and editable chart source;
-`saintdle/pacman-for-k8s` maintains platform installs and scenarios. During the
-publisher transition, the legacy source publisher remains the sole live
-authority while the setting is unset or `helm-charts`. An approved switch
-selects the generated receiver; verify its public output before retiring the
-legacy source.
+This tree is generated-only: it has no editable chart source or legacy
+source-publishing workflow. The generated artifact receiver is the sole chart
+publisher here. It accepts generated artifacts only when
+`PACMAN_CHART_PUBLISHER_AUTHORITY=pacman`. See the
+[publisher operations guide](docs/chart-publisher-cutover.md) for recovery and
+the history of the cutover.
 
 ## Usage
 
@@ -19,75 +23,39 @@ helm repo update
 helm search repo saintdle
 ```
 
-Charts:
+The `pacman` chart supports MongoDB and PostgreSQL backends.
 
-- [`pacman`](charts/pacman): Pac-Man (Node.js + Express) on Kubernetes with a
-  MongoDB or PostgreSQL backend.
+## Current public release
 
-## Repository layout
+The current public compatibility pair is app `0.7.17` and chart `0.7.20`.
+The generated chart came from
+[`saintdle/pacman` commit `a405d8d66d63c8d121ed993f55583a6ff634c86d`](https://github.com/saintdle/pacman/commit/a405d8d66d63c8d121ed993f55583a6ff634c86d)
+and is published as the
+[`pacman-0.7.20` release](https://github.com/saintdle/helm-charts/releases/tag/pacman-0.7.20).
+The package SHA-256 is
+`07544a4b0d1279d2310a61f065140a2a5c6b12d13ca45017f920188990dd6e58`; its
+chart record SHA-256 is
+`75698e5320b948caa7411f8f2a4b1b011860248fc2302cfb95441fa39511350c`, and its
+compatibility lock SHA-256 is
+`c4713869cdabf71cb68818c1abcce36a72d85ff210788ffd6f448b186541337b`. The
+[public Pages index](https://saintdle.github.io/helm-charts/index.yaml) lists
+the published chart versions. These identities describe the public bundle;
+they do not establish consumer acceptance or a runtime install result.
 
-- `charts/pacman/`: legacy chart source used while `helm-charts` is the selected
-  publisher. After an approved authority switch, generated packages come from
-  the validated source in `saintdle/pacman`.
-- `gh-pages` branch: the published Helm repo (`index.yaml` plus packaged `.tgz`
-  files). GitHub Pages serves this branch. Do not edit it by hand; the release
-  publisher maintains it and preserves historical entries.
+## Distribution and history
 
-The currently published compatibility pair is app `0.7.16` and chart
-`0.7.17`. The app image is pinned as
-`docker.io/saintdle/pacman@sha256:592740129bce7530a347146b86647f8b516df3c19105aa4c2fe40b878840fccf`
-and was built from
-[`saintdle/pacman` commit `13f04d6e6aea62f1d32d57d90e4eff786083c02e`](https://github.com/saintdle/pacman/commit/13f04d6e6aea62f1d32d57d90e4eff786083c02e).
-It includes the opt-in fault and synthetic security-probe runtime. The public
-`pacman-0.7.17` chart source tag resolves to
-[`saintdle/helm-charts` commit `1d11684428b2069aef8d4e69c37237b5b3c910a5`](https://github.com/saintdle/helm-charts/commit/1d11684428b2069aef8d4e69c37237b5b3c910a5).
-The later `c24c5267340a58259cf3d7c8f337ace4c19d1d7a` commit is a migration
-donor for a chart copy, not the published release source. These legacy releases
-predate schema-v1 records and have no v1 consumer lock; their record format does
-not erase the independently verified runtime evidence in the
-[public native run](https://github.com/saintdle/pacman-for-k8s/actions/runs/40221882676).
-
-## Publishing a chart
-
-While `PACMAN_CHART_PUBLISHER_AUTHORITY` is unset or `helm-charts`, the legacy
-`chart-release.yml` workflow is the only active publisher. It packages the
-chart source on `main`, creates an immutable version release, verifies the
-package, and updates the Pages index. To ship a new legacy-source version:
-
-1. Make your chart changes under `charts/<name>/`.
-2. Bump `version` in `charts/<name>/Chart.yaml` to a new value.
-3. Open a pull request. Two required checks run:
-   - **version-gate** fails unless `version` is bumped to a new, unreleased
-     value. This is the flag that must be green before the PR can merge.
-   - **manifests** lints the chart, posts a rendered-manifest preview (diffed
-     against the base branch) as a PR comment, and uploads the full rendered
-     manifests for both backends as a downloadable artifact.
-4. Review the preview, then merge.
-
-On merge to `main`, the legacy release workflow packages the chart, creates a
-`<name>-<version>` GitHub release with the `.tgz` attached, and publishes the
-`.tgz` plus a refreshed `index.yaml` to the `gh-pages` branch. The step is
-idempotent: a retry verifies or repairs that immutable version and does not
-replace it with different bytes.
-
-The generated publisher is a separate prepared path. The Pac-Man
-`chart-artifact-source.yml` workflow validates an exact successful
-`chart-ci.yml` run for a full Pac-Man `main` commit and packages that source;
-this repository's `chart-artifact-publish.yml` verifies the immutable package
-and release identity before publishing it to the same Pages index. Both paths
-share the non-cancelling `pacman-chart-publisher` concurrency group. The
-generated receiver remains dormant until the authority variable is explicitly
-set to `pacman`; merging its workflow alone does not activate it. Follow the
-[publisher cutover guide](docs/chart-publisher-cutover.md) before changing
-authority or retrying a publication.
+The generated receiver validates an exact successful `chart-ci.yml` run for a
+full `main` commit in `saintdle/pacman`, then verifies the package, immutable
+release identity, chart record, and compatibility lock before publication.
+Keep the stable install URL, existing chart tags, releases, package assets,
+and Pages entries. Do not edit the `gh-pages` branch by hand; the release
+publisher maintains the index and preserves historical entries.
 
 ## Workflows
 
-- [`.github/workflows/chart-ci.yml`](.github/workflows/chart-ci.yml): PR
-  validation and manifest preview.
-- [`.github/workflows/chart-release.yml`](.github/workflows/chart-release.yml):
-  current legacy packaging and publishing on merge while `helm-charts` owns
-  publication.
-- [`.github/workflows/chart-artifact-publish.yml`](.github/workflows/chart-artifact-publish.yml):
-  prepared generated-artifact receiver, dormant until `pacman` is selected.
-
+- [`.github/workflows/chart-ci.yml`](.github/workflows/chart-ci.yml) keeps the
+  `version-gate` and `manifests` check names and validates generated-only
+  ownership, artifact authority, immutable records, retries, and history.
+- [`.github/workflows/chart-artifact-publish.yml`](.github/workflows/chart-artifact-publish.yml)
+  validates and publishes generated chart artifacts when the generated
+  publisher authority is selected.
