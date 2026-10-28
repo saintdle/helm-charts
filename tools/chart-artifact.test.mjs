@@ -36,6 +36,30 @@ function workflowRunBlock(step, name) {
   return script.join('\n').trimEnd();
 }
 
+test('publisher workflow pins every action to its verified full commit', () => {
+  const expectedPins = new Map([
+    ['actions/checkout', { commit: 'fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09', version: 'v5', count: 2 }],
+    ['actions/setup-node', { commit: '49933ea5288caeca8642d1e84afbd3f7d6820020', version: 'v4', count: 1 }],
+    ['azure/setup-helm', { commit: '9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310', version: 'v5', count: 1 }],
+  ]);
+  const actions = [...publisherWorkflow.matchAll(/^\s+uses:\s+([^@\s]+)@([^\s#]+)(?:\s+#\s*(.+))?$/gm)];
+  assert.equal(actions.length, 4, 'publisher action references must remain explicit and auditable');
+
+  const observedCounts = new Map();
+  for (const [, action, ref, comment] of actions) {
+    const expected = expectedPins.get(action);
+    assert.ok(expected, `publisher action ${action} must have an explicitly reviewed pin`);
+    assert.match(ref, /^[a-f0-9]{40}$/, `${action} must use a full lowercase commit SHA`);
+    assert.equal(ref, expected.commit, `${action} must use its verified ${expected.version} commit`);
+    assert.equal(comment, expected.version, `${action} pin must retain its ${expected.version} version comment`);
+    observedCounts.set(action, (observedCounts.get(action) ?? 0) + 1);
+  }
+
+  for (const [action, expected] of expectedPins) {
+    assert.equal(observedCounts.get(action), expected.count, `${action} references must remain fully pinned`);
+  }
+});
+
 function createGitCommit(repository, filename, content, message) {
   writeFileSync(join(repository, filename), content);
   execFileSync('git', ['-C', repository, 'add', filename]);
