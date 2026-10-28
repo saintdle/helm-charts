@@ -8,9 +8,17 @@ and accepts an artifact only when
 post-retirement state. It does not approve a merge, release, replay, or
 authority change.
 
-## Current public bundle
+## Verified migration reference bundle
 
-The current public compatibility pair is app `0.7.17` and chart `0.7.20`.
+The explicitly pinned, verified migration/reference pair is app `0.7.17` and
+chart `0.7.20`. This documents one stable reference bundle, not the latest
+release. Use the [public Pages index](https://saintdle.github.io/helm-charts/index.yaml)
+to find the latest published chart version. For generated releases, verify it
+against the immutable chart release record and compatibility lock attached to
+that version's GitHub release. The pinned chart `0.7.20` [chart record](https://github.com/saintdle/helm-charts/releases/download/pacman-0.7.20/chart-release-record.json)
+and [compatibility lock](https://github.com/saintdle/helm-charts/releases/download/pacman-0.7.20/consumer-compatibility-lock.json)
+are direct examples.
+
 The generated chart was built from
 [`saintdle/pacman` commit `a405d8d66d63c8d121ed993f55583a6ff634c86d`](https://github.com/saintdle/pacman/commit/a405d8d66d63c8d121ed993f55583a6ff634c86d)
 and published from distribution commit
@@ -50,10 +58,18 @@ change.
 ## Recovery after source retirement
 
 For an interrupted generated publication, first check the selected authority,
-immutable release, and exact Pages package and index bytes. A retry or replay
-must be separately approved and reuse the same source and package identity.
-Never replace released bytes, relabel source provenance, or reuse a version
-for different contents.
+immutable release, and exact Pages package and index bytes. Any approved
+replay of a published release must rerun the original successful generated
+distribution workflow run, preserving its commit and source/package identity.
+For chart `0.7.20`, the verified replay was attempt 2 of the original
+[distribution run 40652927950](https://github.com/saintdle/helm-charts/actions/runs/40652927950)
+at commit
+[`1381632438f8f54088996d0cb86bf6f1d16e8602`](https://github.com/saintdle/helm-charts/commit/1381632438f8f54088996d0cb86bf6f1d16e8602).
+Do not dispatch against the latest source or rebuild released package bytes.
+Compare the immutable releases, package and record assets, tags, and Pages
+index before and after; accept a replay only when those public identities are
+unchanged. Never relabel source provenance or reuse a version for different
+contents.
 
 The retained-source rollback procedure is no longer available in this tree. A
 legacy publisher can be selected only after a separately reviewed restoration
@@ -86,8 +102,8 @@ reviewed restoration described above before legacy authority can be selected.
 
 ## Historical audit: app 0.7.16 and chart 0.7.17
 
-This is a historical pair, superseded by the public app `0.7.17` / chart
-`0.7.20` pair above. App `0.7.16` was built from
+This is a historical pair, superseded by the verified migration/reference app
+`0.7.17` / chart `0.7.20` pair above. App `0.7.16` was built from
 [`saintdle/pacman` commit `13f04d6e6aea62f1d32d57d90e4eff786083c02e`](https://github.com/saintdle/pacman/commit/13f04d6e6aea62f1d32d57d90e4eff786083c02e)
 as `docker.io/saintdle/pacman@sha256:592740129bce7530a347146b86647f8b516df3c19105aa4c2fe40b878840fccf`.
 The public `pacman-0.7.17` chart source tag resolves to
