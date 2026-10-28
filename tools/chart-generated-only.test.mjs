@@ -1,9 +1,79 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, relative, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const root = new URL('..', import.meta.url);
 const path = (relative) => new URL(relative, root);
+const repositoryRoot = fileURLToPath(root);
+const expectedWorkflows = ['chart-artifact-publish.yml', 'chart-ci.yml'];
+
+function chartMetadataFiles(directory, repository) {
+  const files = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (entry.name !== '.git' && entry.name !== 'node_modules') {
+        files.push(...chartMetadataFiles(join(directory, entry.name), repository));
+      }
+    } else if (entry.name.toLowerCase() === 'chart.yaml') {
+      files.push(relative(repository, join(directory, entry.name)).split(sep).join('/'));
+    }
+  }
+  return files.sort();
+}
+
+function generatedOnlyInventory(repository) {
+  const violations = [];
+  const workflowDirectory = join(repository, '.github', 'workflows');
+  const workflowEntries = existsSync(workflowDirectory)
+    ? readdirSync(workflowDirectory).sort()
+    : [];
+
+  if (JSON.stringify(workflowEntries) !== JSON.stringify(expectedWorkflows)) {
+    violations.push(
+      `workflow inventory must be exactly ${expectedWorkflows.join(', ')}; found ${workflowEntries.join(', ') || '(none)'}`,
+    );
+  }
+
+  if (existsSync(join(repository, 'charts'))) {
+    violations.push('editable chart source root charts/ must stay absent');
+  }
+
+  const chartFiles = chartMetadataFiles(repository, repository);
+  if (chartFiles.length > 0) {
+    violations.push(`editable Helm chart metadata must stay absent: ${chartFiles.join(', ')}`);
+  }
+
+  return violations;
+}
+
+test('generated-only inventory rejects newly named chart source and publisher paths', () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'chart-generated-only-inventory-'));
+  try {
+    const workflowDirectory = join(fixture, '.github', 'workflows');
+    mkdirSync(workflowDirectory, { recursive: true });
+    writeFileSync(join(workflowDirectory, 'chart-artifact-publish.yml'), 'name: generated receiver\n');
+    writeFileSync(join(workflowDirectory, 'chart-ci.yml'), 'name: chart checks\n');
+    assert.deepEqual(generatedOnlyInventory(fixture), [], 'the intended generated-only layout should pass');
+
+    const sourceDirectory = join(fixture, 'charts', 'pacman-copy');
+    mkdirSync(sourceDirectory, { recursive: true });
+    writeFileSync(join(sourceDirectory, 'Chart.yaml'), 'apiVersion: v2\nname: pacman-copy\nversion: 1.0.0\n');
+    writeFileSync(join(workflowDirectory, 'chart-release-again.yml'), 'name: extra publisher\non: [push]\n');
+
+    const violations = generatedOnlyInventory(fixture).join('\n');
+    assert.match(violations, /chart-release-again\.yml/);
+    assert.match(violations, /charts\/pacman-copy\/Chart\.yaml/);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test('the repository keeps only the intended generated publisher workflows and no editable chart source', () => {
+  assert.deepEqual(generatedOnlyInventory(repositoryRoot), []);
+});
 
 test('generated-only distribution rejects the retired source and publisher inputs', () => {
   for (const relative of [
