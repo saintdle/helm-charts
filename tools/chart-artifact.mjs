@@ -10,6 +10,11 @@ const shaPattern = /^[a-f0-9]{40}$/;
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const checksumPattern = /^[a-f0-9]{64}$/;
 const apiBase = 'https://api.github.com';
+const artifactFields = [
+  'chart_name', 'chart_version', 'app_version', 'image_digest', 'source_repository', 'source_commit',
+  'source_package_reference', 'package_sha256', 'app_record_reference', 'app_record_sha256',
+  'source_identity_reference', 'source_identity_sha256',
+];
 
 function fail(message) {
   throw new Error(message);
@@ -19,7 +24,7 @@ function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-function assertPayload(payload) {
+function assertFlatPayload(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail('chart artifact event payload is required');
   if (payload.chart_name !== 'pacman') fail('chart artifact must identify the pacman chart');
   if (!versionPattern.test(payload.chart_version ?? '') || !versionPattern.test(payload.app_version ?? '')) fail('chart and app versions must be canonical stable versions');
@@ -30,6 +35,32 @@ function assertPayload(payload) {
   const expectedAppRecord = `https://github.com/saintdle/pacman/releases/download/pacman-v${payload.app_version}/app-release-record.json`;
   const expectedIdentity = `${expectedPackage}.identity.json`;
   if (payload.source_package_reference !== expectedPackage || payload.app_record_reference !== expectedAppRecord || payload.source_identity_reference !== expectedIdentity) fail('source package, identity sidecar, and app record must be versioned assets in the exact pacman app release');
+}
+
+export function decodeArtifactPayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail('chart artifact event payload is required');
+  const hasSchemaVersion = Object.hasOwn(payload, 'schema_version');
+  const hasArtifact = Object.hasOwn(payload, 'artifact');
+  if (hasSchemaVersion || hasArtifact) {
+    const envelopeKeys = Object.keys(payload);
+    if (!hasSchemaVersion || !hasArtifact || envelopeKeys.length !== 2
+      || !envelopeKeys.includes('schema_version') || !envelopeKeys.includes('artifact')) {
+      fail('chart artifact dispatch envelope must contain only schema_version and artifact');
+    }
+    if (payload.schema_version !== 1) fail('chart artifact dispatch envelope has an unsupported schema_version');
+    if (!payload.artifact || typeof payload.artifact !== 'object' || Array.isArray(payload.artifact)) {
+      fail('chart artifact dispatch envelope must contain an artifact object');
+    }
+    const fields = Object.keys(payload.artifact);
+    if (fields.length !== artifactFields.length || artifactFields.some((field) => !Object.hasOwn(payload.artifact, field))) {
+      fail('chart artifact dispatch envelope identity must contain exactly the v1 artifact fields');
+    }
+    assertFlatPayload(payload.artifact);
+    return payload.artifact;
+  }
+  // Flat values remain accepted by internal helper callers and existing fixtures.
+  assertFlatPayload(payload);
+  return payload;
 }
 
 async function githubRequest(path, { token, fetch: fetchRequest = fetch, octet = false } = {}) {
@@ -79,46 +110,46 @@ async function downloadReleaseAsset({ tag, filename, token, fetch: fetchRequest 
 }
 
 export async function prepareGeneratedPublication({ payload, codecPath, token, fetch: fetchRequest = fetch }) {
-  assertPayload(payload);
-  const candidateValidation = await verifyPacmanChartCandidate({ sourceCommit: payload.source_commit, token, fetch: fetchRequest });
+  const artifact = decodeArtifactPayload(payload);
+  const candidateValidation = await verifyPacmanChartCandidate({ sourceCommit: artifact.source_commit, token, fetch: fetchRequest });
   const packageBytes = await downloadReleaseAsset({
-    tag: `pacman-v${payload.app_version}`,
-    filename: `pacman-${payload.chart_version}.tgz`,
+    tag: `pacman-v${artifact.app_version}`,
+    filename: `pacman-${artifact.chart_version}.tgz`,
     token,
     fetch: fetchRequest,
   });
-  if (sha256(packageBytes) !== payload.package_sha256) fail('Pacman source package checksum does not match the dispatched immutable artifact identity');
+  if (sha256(packageBytes) !== artifact.package_sha256) fail('Pacman source package checksum does not match the dispatched immutable artifact identity');
   const appRecordBytes = await downloadReleaseAsset({
-    tag: `pacman-v${payload.app_version}`,
+    tag: `pacman-v${artifact.app_version}`,
     filename: 'app-release-record.json',
     token,
     fetch: fetchRequest,
   });
-  if (sha256(appRecordBytes) !== payload.app_record_sha256) fail('Pacman app record checksum does not match the dispatched immutable artifact identity');
+  if (sha256(appRecordBytes) !== artifact.app_record_sha256) fail('Pacman app record checksum does not match the dispatched immutable artifact identity');
   const identityBytes = await downloadReleaseAsset({
-    tag: `pacman-v${payload.app_version}`,
-    filename: `pacman-${payload.chart_version}.tgz.identity.json`,
+    tag: `pacman-v${artifact.app_version}`,
+    filename: `pacman-${artifact.chart_version}.tgz.identity.json`,
     token,
     fetch: fetchRequest,
   });
-  if (sha256(identityBytes) !== payload.source_identity_sha256) fail('Pacman chart source identity sidecar checksum does not match the dispatched immutable identity');
+  if (sha256(identityBytes) !== artifact.source_identity_sha256) fail('Pacman chart source identity sidecar checksum does not match the dispatched immutable identity');
   const identity = JSON.parse(identityBytes.toString('utf8'));
-  const expectedIdentity = { schema_version: 1, kind: 'pacman-chart-source-package', chart_version: payload.chart_version,
-    source_commit: payload.source_commit, package_sha256: payload.package_sha256, app_record_reference: payload.app_record_reference,
-    app_record_sha256: payload.app_record_sha256, image_digest: payload.image_digest };
+  const expectedIdentity = { schema_version: 1, kind: 'pacman-chart-source-package', chart_version: artifact.chart_version,
+    source_commit: artifact.source_commit, package_sha256: artifact.package_sha256, app_record_reference: artifact.app_record_reference,
+    app_record_sha256: artifact.app_record_sha256, image_digest: artifact.image_digest };
   if (`${JSON.stringify(identity)}\n` !== identityBytes.toString('utf8') || JSON.stringify(identity) !== JSON.stringify(expectedIdentity)) {
     fail('Pacman chart source identity sidecar does not match the exact package, app record, image, and chart source');
   }
   const codecUrl = pathToFileURL(resolve(codecPath));
   const codec = await import(codecUrl.href);
   const appRecord = codec.parseAppReleaseRecord(appRecordBytes);
-  if (appRecord.app_version !== payload.app_version || appRecord.image.manifest_list_digest !== payload.image_digest) fail('Pacman app record does not match the chart app version and image digest');
-  const releasePackageReference = `https://github.com/saintdle/helm-charts/releases/download/pacman-${payload.chart_version}/pacman-${payload.chart_version}.tgz`;
+  if (appRecord.app_version !== artifact.app_version || appRecord.image.manifest_list_digest !== artifact.image_digest) fail('Pacman app record does not match the chart app version and image digest');
+  const releasePackageReference = `https://github.com/saintdle/helm-charts/releases/download/pacman-${artifact.chart_version}/pacman-${artifact.chart_version}.tgz`;
   const bundle = codec.createChartReleaseBundle({
     appRecordBytes,
-    chartVersion: payload.chart_version,
+    chartVersion: artifact.chart_version,
     sourceRepository: 'https://github.com/saintdle/pacman',
-    sourceCommit: payload.source_commit,
+    sourceCommit: artifact.source_commit,
     packageReference: releasePackageReference,
     packageBytes,
   });
@@ -144,25 +175,26 @@ async function main() {
   const payload = event.client_payload;
   const token = process.env.GH_TOKEN;
   if (mode === 'validate-candidate') {
-    assertPayload(payload);
-    const validation = await verifyPacmanChartCandidate({ sourceCommit: payload.source_commit, token });
+    const artifact = decodeArtifactPayload(payload);
+    const validation = await verifyPacmanChartCandidate({ sourceCommit: artifact.source_commit, token });
     console.log(JSON.stringify(validation));
     return;
   }
   if (mode !== 'publish') fail('usage: chart-artifact.mjs validate-candidate|publish');
   await assertChartPublisherAuthority('pacman', { repository: process.env.GITHUB_REPOSITORY, token });
+  const artifact = decodeArtifactPayload(payload);
   const { candidateValidation, packageBytes, releaseAssets } = await prepareGeneratedPublication({
-    payload,
+    payload: artifact,
     codecPath: process.env.PACMAN_RELEASE_RECORDS_CODEC,
     token,
   });
   const identity = {
-    name: payload.chart_name,
-    version: payload.chart_version,
-    appVersion: payload.app_version,
-    imageDigest: payload.image_digest,
-    sourceRepository: payload.source_repository,
-    sourceCommit: payload.source_commit,
+    name: artifact.chart_name,
+    version: artifact.chart_version,
+    appVersion: artifact.app_version,
+    imageDigest: artifact.image_digest,
+    sourceRepository: artifact.source_repository,
+    sourceCommit: artifact.source_commit,
     distributionRepository: process.env.GITHUB_REPOSITORY,
     distributionCommit: process.env.GITHUB_SHA,
     pagesUrl: process.env.PAGES_URL,

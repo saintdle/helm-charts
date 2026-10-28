@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { createPublicationRuntime, publishChart } from './chart-publication.mjs';
+import { createPublicationRuntime, encodeGeneratedReleaseNotification, publishChart } from './chart-publication.mjs';
 
 const identity = {
   name: 'pacman',
@@ -240,13 +240,30 @@ test('publication identity keeps source and distribution repositories independen
   assert.match(api.release.body, new RegExp(`Source repository: https://github.com/${generatedIdentity.sourceRepository}`));
   assert.match(api.release.body, new RegExp(`Source commit: ${generatedIdentity.sourceCommit}`));
   assert.equal(result.sourceRepository, generatedIdentity.sourceRepository);
-  assert.equal(api.dispatches[0].client_payload.source_commit, generatedIdentity.sourceCommit);
+  assert.equal(api.dispatches[0].client_payload.release.source_commit, generatedIdentity.sourceCommit);
   assert.deepEqual([...api.recordAssets.keys()].sort(), ['chart-release-record.json', 'consumer-compatibility-lock.json']);
   assert.equal(api.calls.assetUpload, 3);
-  assert.equal(api.dispatches[0].client_payload.source_repository, 'https://github.com/saintdle/pacman');
-  assert.equal(api.dispatches[0].client_payload.package_sha256, checksum(api.assetBytes));
-  assert.equal(api.dispatches[0].client_payload.chart_release_sha256, checksum(api.recordAssets.get('chart-release-record.json')));
-  assert.equal(api.dispatches[0].client_payload.compatibility_lock_sha256, checksum(api.recordAssets.get('consumer-compatibility-lock.json')));
+  assert.equal(api.dispatches[0].client_payload.release.source_repository, 'https://github.com/saintdle/pacman');
+  assert.equal(api.dispatches[0].client_payload.release.package_sha256, checksum(api.assetBytes));
+  assert.equal(api.dispatches[0].client_payload.release.chart_release_sha256, checksum(api.recordAssets.get('chart-release-record.json')));
+  assert.equal(api.dispatches[0].client_payload.release.compatibility_lock_sha256, checksum(api.recordAssets.get('consumer-compatibility-lock.json')));
+  assert.equal(Object.keys(api.dispatches[0].client_payload.release).length, 11);
+  assert.deepEqual(api.dispatches[0].client_payload, {
+    schema_version: 1,
+    release: {
+      app_version: generatedIdentity.appVersion,
+      chart_version: generatedIdentity.version,
+      image_digest: generatedIdentity.imageDigest,
+      source_commit: generatedIdentity.sourceCommit,
+      source_repository: 'https://github.com/saintdle/pacman',
+      package_reference: `https://github.com/saintdle/helm-charts/releases/download/pacman-${generatedIdentity.version}/pacman-${generatedIdentity.version}.tgz`,
+      package_sha256: checksum(api.assetBytes),
+      chart_release_reference: `https://github.com/saintdle/helm-charts/releases/download/pacman-${generatedIdentity.version}/chart-release-record.json`,
+      chart_release_sha256: checksum(api.recordAssets.get('chart-release-record.json')),
+      compatibility_lock_reference: `https://github.com/saintdle/helm-charts/releases/download/pacman-${generatedIdentity.version}/consumer-compatibility-lock.json`,
+      compatibility_lock_sha256: checksum(api.recordAssets.get('consumer-compatibility-lock.json')),
+    },
+  });
 });
 
 test('generated record assets are immutable and publication replay retains exact bytes', async () => {
@@ -572,6 +589,70 @@ test('production adapter uses the published tag endpoint for replay and does not
 
   assert.deepEqual(await api.getRelease('pacman-0.7.18'), published);
   assert.equal(requested.length, 1);
+});
+
+test('production repository_dispatch rejects the old 11-field payload and accepts the bounded v1 envelope', async () => {
+  const requests = [];
+  const { api } = createPublicationRuntime(identity, {
+    token: 'fixture-token',
+    dispatchToken: 'fixture-dispatch-token',
+    fetch: async (url, options) => {
+      requests.push({ url: String(url), options });
+      return new Response(null, { status: 204 });
+    },
+  });
+  const release = {
+    app_version: '0.7.17',
+    chart_version: '0.7.20',
+    image_digest: `sha256:${'2a'.repeat(32)}`,
+    source_commit: 'a405d8d66d63c8d121ed993f55583a6ff634c86d',
+    source_repository: 'https://github.com/saintdle/pacman',
+    package_reference: 'https://github.com/saintdle/helm-charts/releases/download/pacman-0.7.20/pacman-0.7.20.tgz',
+    package_sha256: '1'.repeat(64),
+    chart_release_reference: 'https://github.com/saintdle/helm-charts/releases/download/pacman-0.7.20/chart-release-record.json',
+    chart_release_sha256: '2'.repeat(64),
+    compatibility_lock_reference: 'https://github.com/saintdle/helm-charts/releases/download/pacman-0.7.20/consumer-compatibility-lock.json',
+    compatibility_lock_sha256: '3'.repeat(64),
+  };
+
+  await assert.rejects(api.dispatchNotification({
+    event_type: 'pacman-chart-release',
+    client_payload: release,
+  }), /10 top-level properties/);
+  assert.equal(requests.length, 0, 'the old 11-field request must be rejected before network access');
+
+  const notification = encodeGeneratedReleaseNotification(release);
+  await api.dispatchNotification(notification);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, 'https://api.github.com/repos/saintdle/pacman-for-k8s/dispatches');
+  assert.equal(requests[0].options.method, 'POST');
+  assert.deepEqual(JSON.parse(requests[0].options.body), notification);
+  assert.equal(Object.keys(JSON.parse(requests[0].options.body).client_payload.release).length, 11);
+  assert.ok(Buffer.byteLength(requests[0].options.body, 'utf8') < 65_536);
+
+  await assert.rejects(api.dispatchNotification({
+    event_type: 'pacman-chart-release',
+    client_payload: { schema_version: 1, release: { ...release, extra: 'é'.repeat(33_000) } },
+  }), /UTF-8 bytes/);
+  assert.equal(requests.length, 1, 'oversized request must be rejected before network access');
+});
+
+test('production repository_dispatch errors include only method, endpoint, and status', async () => {
+  const { api } = createPublicationRuntime(identity, {
+    token: 'fixture-token',
+    dispatchToken: 'fixture-dispatch-token',
+    fetch: async () => new Response('fixture response with secret text', { status: 422 }),
+  });
+
+  await assert.rejects(api.dispatchNotification({
+    event_type: 'pacman-chart-release',
+    client_payload: { app_version: identity.appVersion, chart_version: identity.version, image_digest: identity.imageDigest, source_commit: identity.sourceCommit },
+  }), (error) => {
+    assert.match(error.message, /POST \/repos\/saintdle\/pacman-for-k8s\/dispatches/);
+    assert.match(error.message, /HTTP 422/);
+    assert.doesNotMatch(error.message, /fixture response with secret text|fixture-dispatch-token/);
+    return true;
+  });
 });
 
 test('production adapter fails closed on duplicate draft matches before publication or notification', async () => {

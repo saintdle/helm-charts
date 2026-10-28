@@ -96,6 +96,7 @@ jobs:
     outputs:
       changed: ${{ steps.detect.outputs.changed }}
       promotion_state_changed: ${{ steps.detect.outputs.promotion_state_changed }}
+      publisher_transport_changed: ${{ steps.detect.outputs.publisher_transport_changed }}
     steps:
       - name: Checkout PR
         uses: actions/checkout@v5
@@ -116,6 +117,11 @@ jobs:
             echo "promotion_state_changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "promotion_state_changed=true" >> "$GITHUB_OUTPUT"
+          fi
+          if git diff --quiet FETCH_HEAD -- tools/chart-artifact.mjs tools/chart-artifact.test.mjs tools/chart-publication.mjs tools/chart-publication.test.mjs tools/chart-ci.test.mjs .github/workflows/chart-ci.yml .github/workflows/chart-artifact-publish.yml; then
+            echo "publisher_transport_changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publisher_transport_changed=true" >> "$GITHUB_OUTPUT"
           fi
 
   promotion-state-regression:
@@ -216,7 +222,13 @@ jobs:
     name: lifecycle (${{ matrix.database }})
     needs: [detect, candidate-identity]
     if: needs.detect.outputs.changed == 'true'
-    runs-on: ubuntu-latest
+    # Temporary Mongo compatibility bridge: the current Ubuntu 22.04 image
+    # documents Linux 6.8, which is qualified by the lifecycle preflight below.
+    # The runner label alone is not proof; Mongo requires the captured host and
+    # image identity to match. Migrate before Ubuntu 22.04 support ends on
+    # 2027-04-17: https://github.com/actions/runner-images/issues/14254
+    # Current image details: https://raw.githubusercontent.com/actions/runner-images/main/images/ubuntu/Ubuntu2204-Readme.md
+    runs-on: ${{ matrix.database == 'mongo' && 'ubuntu-22.04' || 'ubuntu-latest' }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -362,10 +374,20 @@ jobs:
           esac
 
       - name: Set up Helm
-        if: needs.detect.outputs.changed == 'true'
+        if: needs.detect.outputs.changed == 'true' || needs.detect.outputs.publisher_transport_changed == 'true'
         uses: azure/setup-helm@v5
         with:
           version: ${{ env.HELM_VERSION }}
+
+      - name: Set up Node.js for publisher transport suites
+        if: needs.detect.outputs.publisher_transport_changed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run artifact and publication transport suites
+        if: needs.detect.outputs.publisher_transport_changed == 'true'
+        run: node --test tools/chart-artifact.test.mjs tools/chart-publication.test.mjs
 
       - name: Render manifests and build preview
         id: render

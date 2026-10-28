@@ -11,6 +11,11 @@ const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const checksumPattern = /^[a-f0-9]{64}$/;
 const apiBase = 'https://api.github.com';
 const uploadBase = 'https://uploads.github.com';
+const repositoryDispatchPath = '/repos/saintdle/pacman-for-k8s/dispatches';
+const generatedReleaseFields = [
+  'app_version', 'chart_version', 'image_digest', 'source_commit', 'source_repository', 'package_reference',
+  'package_sha256', 'chart_release_reference', 'chart_release_sha256', 'compatibility_lock_reference', 'compatibility_lock_sha256',
+];
 const maxPublicAttempts = 61;
 const maxPublicWaitMs = 10 * 60 * 1000;
 const maxPublicSleepOvershootMs = 1000; // Allow one final check after modest timer drift.
@@ -21,6 +26,40 @@ function fail(message) {
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+export function encodeGeneratedReleaseNotification(release) {
+  if (!release || typeof release !== 'object' || Array.isArray(release)) fail('generated chart release notification requires a release object');
+  const fields = Object.keys(release);
+  if (fields.length !== generatedReleaseFields.length || generatedReleaseFields.some((field) => !Object.hasOwn(release, field))) {
+    fail('generated chart release notification must contain exactly the v1 release identity fields');
+  }
+  return {
+    event_type: 'pacman-chart-release',
+    client_payload: {
+      schema_version: 1,
+      release: Object.fromEntries(generatedReleaseFields.map((field) => [field, release[field]])),
+    },
+  };
+}
+
+function serializeRepositoryDispatch(payload) {
+  const clientPayload = payload?.client_payload;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+    || !clientPayload || typeof clientPayload !== 'object' || Array.isArray(clientPayload)) {
+    fail(`repository_dispatch POST ${repositoryDispatchPath} requires a JSON client_payload object`);
+  }
+  if (Object.keys(clientPayload).length > 10) {
+    fail(`repository_dispatch POST ${repositoryDispatchPath} client_payload exceeds 10 top-level properties`);
+  }
+  let body;
+  try { body = JSON.stringify(payload); }
+  catch { fail(`repository_dispatch POST ${repositoryDispatchPath} body must be valid JSON`); }
+  if (typeof body !== 'string') fail(`repository_dispatch POST ${repositoryDispatchPath} body must be valid JSON`);
+  if (Buffer.byteLength(body, 'utf8') >= 65_536) {
+    fail(`repository_dispatch POST ${repositoryDispatchPath} JSON body must be less than 65536 UTF-8 bytes`);
+  }
+  return body;
 }
 
 function validateIdentity(identity) {
@@ -356,24 +395,29 @@ export async function publishChart({ identity: inputIdentity, api, candidateVali
   if (!verifiedPublic) fail(`public publication for ${identity.tag} failed verification after ${publicChecks} attempts: ${lastPublicError}`);
   await checkpoint(api, 'public-checksum');
 
-  const payload = {
-    event_type: 'pacman-chart-release',
-    client_payload: {
+  const payload = generatedAssets
+    ? encodeGeneratedReleaseNotification({
       app_version: identity.appVersion,
       chart_version: identity.version,
       image_digest: identity.imageDigest,
       source_commit: identity.sourceCommit,
-      ...(generatedAssets ? {
-        source_repository: `https://github.com/${identity.sourceRepository}`,
-        package_reference: `https://github.com/${identity.distributionRepository}/releases/download/${identity.tag}/${identity.filename}`,
-        package_sha256: assetChecksum,
-        chart_release_reference: `https://github.com/${identity.distributionRepository}/releases/download/${identity.tag}/chart-release-record.json`,
-        chart_release_sha256: sha256(generatedAssets['chart-release-record.json']),
-        compatibility_lock_reference: `https://github.com/${identity.distributionRepository}/releases/download/${identity.tag}/consumer-compatibility-lock.json`,
-        compatibility_lock_sha256: sha256(generatedAssets['consumer-compatibility-lock.json']),
-      } : {}),
-    },
-  };
+      source_repository: `https://github.com/${identity.sourceRepository}`,
+      package_reference: `https://github.com/${identity.distributionRepository}/releases/download/${identity.tag}/${identity.filename}`,
+      package_sha256: assetChecksum,
+      chart_release_reference: `https://github.com/${identity.distributionRepository}/releases/download/${identity.tag}/chart-release-record.json`,
+      chart_release_sha256: sha256(generatedAssets['chart-release-record.json']),
+      compatibility_lock_reference: `https://github.com/${identity.distributionRepository}/releases/download/${identity.tag}/consumer-compatibility-lock.json`,
+      compatibility_lock_sha256: sha256(generatedAssets['consumer-compatibility-lock.json']),
+    })
+    : {
+      event_type: 'pacman-chart-release',
+      client_payload: {
+        app_version: identity.appVersion,
+        chart_version: identity.version,
+        image_digest: identity.imageDigest,
+        source_commit: identity.sourceCommit,
+      },
+    };
   await api.dispatchNotification(payload);
   await checkpoint(api, 'notification');
 
@@ -619,17 +663,23 @@ export function createLiveAdapter(inputIdentity, dependencies = {}) {
     },
     sleep: (duration) => new Promise((resolvePromise) => setTimeout(resolvePromise, duration)),
     async dispatchNotification(payload) {
-      const response = await fetchRequest(`${apiBase}/repos/saintdle/pacman-for-k8s/dispatches`, {
-        method: 'POST',
-        headers: {
-          Accept: 'application/vnd.github+json',
-          Authorization: `Bearer ${dispatchToken}`,
-          'X-GitHub-Api-Version': '2022-11-28',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      });
-      if (!response.ok) throw new Error(`promotion notification failed: HTTP ${response.status}`);
+      const body = serializeRepositoryDispatch(payload);
+      let response;
+      try {
+        response = await fetchRequest(`${apiBase}${repositoryDispatchPath}`, {
+          method: 'POST',
+          headers: {
+            Accept: 'application/vnd.github+json',
+            Authorization: `Bearer ${dispatchToken}`,
+            'X-GitHub-Api-Version': '2022-11-28',
+            'Content-Type': 'application/json',
+          },
+          body,
+        });
+      } catch {
+        fail(`repository_dispatch POST ${repositoryDispatchPath} failed before receiving an HTTP status`);
+      }
+      if (!response.ok) fail(`repository_dispatch POST ${repositoryDispatchPath} failed: HTTP ${response.status}`);
     },
   };
 }
