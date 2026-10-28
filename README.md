@@ -25,9 +25,19 @@ helm search repo saintdle
 
 The `pacman` chart supports MongoDB and PostgreSQL backends.
 
-## Current public release
+## Verified migration reference
 
-The current public compatibility pair is app `0.7.17` and chart `0.7.20`.
+The explicitly pinned, verified migration/reference pair is app `0.7.17` and
+chart `0.7.20`. This is a stable reference to one verified public bundle, not
+a pointer to the latest release. Use the
+[public Pages index](https://saintdle.github.io/helm-charts/index.yaml) to
+find the latest published chart version. For generated releases, verify it
+against the immutable chart release record and compatibility lock attached to
+that version's GitHub release. The pinned chart `0.7.20` record and lock are
+[available here](https://github.com/saintdle/helm-charts/releases/download/pacman-0.7.20/chart-release-record.json)
+and
+[here](https://github.com/saintdle/helm-charts/releases/download/pacman-0.7.20/consumer-compatibility-lock.json).
+
 The generated chart came from
 [`saintdle/pacman` commit `a405d8d66d63c8d121ed993f55583a6ff634c86d`](https://github.com/saintdle/pacman/commit/a405d8d66d63c8d121ed993f55583a6ff634c86d)
 and is published as the
@@ -37,10 +47,9 @@ The package SHA-256 is
 chart record SHA-256 is
 `75698e5320b948caa7411f8f2a4b1b011860248fc2302cfb95441fa39511350c`, and its
 compatibility lock SHA-256 is
-`c4713869cdabf71cb68818c1abcce36a72d85ff210788ffd6f448b186541337b`. The
-[public Pages index](https://saintdle.github.io/helm-charts/index.yaml) lists
-the published chart versions. These identities describe the public bundle;
-they do not establish consumer acceptance or a runtime install result.
+`c4713869cdabf71cb68818c1abcce36a72d85ff210788ffd6f448b186541337b`. These
+identities describe the public bundle; by themselves they do not establish
+consumer acceptance or a runtime install result.
 
 ## Distribution and history
 
