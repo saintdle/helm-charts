@@ -39,19 +39,43 @@ jobs:
         run: node tools/chart-authority.mjs pacman
 
       - name: Verify the exact Pac-Man main source candidate before checkout
+        id: validate_source
         env:
           GH_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN }}
-        run: node tools/chart-artifact.mjs validate-candidate
+        run: |
+          set -euo pipefail
+          validation=$(node tools/chart-artifact.mjs validate-candidate)
+          echo "$validation"
+          source_sha=$(jq -er '.sourceCommit | strings | select(test("^[a-f0-9]{40}$"))' <<< "$validation")
+          printf 'source_sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
 
       - name: Check out only the authoritative release record codec
         uses: actions/checkout@v5
         with:
           repository: saintdle/pacman
-          ref: ${{ github.event.client_payload.source_commit }}
+          ref: ${{ steps.validate_source.outputs.source_sha }}
           path: pacman-codec
           sparse-checkout: tools/release-records.js
           sparse-checkout-cone-mode: false
           persist-credentials: false
+
+      - name: Confirm checked-out codec source identity
+        env:
+          EXPECTED_CODEC_SHA: ${{ steps.validate_source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_CODEC_SHA" =~ ^[a-f0-9]{40}$ ]] || {
+            echo "validated Pac-Man codec source must be a full lowercase SHA" >&2
+            exit 1
+          }
+          actual_codec_sha=$(git -C "$GITHUB_WORKSPACE/pacman-codec" rev-parse HEAD 2>/dev/null) || {
+            echo "could not determine checked-out codec SHA" >&2
+            exit 1
+          }
+          [[ "$actual_codec_sha" == "$EXPECTED_CODEC_SHA" ]] || {
+            echo "checked-out Pac-Man codec $actual_codec_sha does not match validated source $EXPECTED_CODEC_SHA" >&2
+            exit 1
+          }
 
       - name: Set up Helm
         uses: azure/setup-helm@v5

@@ -11,6 +11,14 @@ const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const checksumPattern = /^[a-f0-9]{64}$/;
 const apiBase = 'https://api.github.com';
 const uploadBase = 'https://uploads.github.com';
+const repositoryDispatchPath = '/repos/saintdle/pacman-for-k8s/dispatches';
+const generatedReleaseFields = [
+  'app_version', 'chart_version', 'image_digest', 'source_commit', 'source_repository', 'package_reference',
+  'package_sha256', 'chart_release_reference', 'chart_release_sha256', 'compatibility_lock_reference', 'compatibility_lock_sha256',
+];
+const maxPublicAttempts = 61;
+const maxPublicWaitMs = 10 * 60 * 1000;
+const maxPublicSleepOvershootMs = 1000; // Allow one final check after modest timer drift.
 
 function fail(message) {
   throw new Error(message);
@@ -18,6 +26,40 @@ function fail(message) {
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+export function encodeGeneratedReleaseNotification(release) {
+  if (!release || typeof release !== 'object' || Array.isArray(release)) fail('generated chart release notification requires a release object');
+  const fields = Object.keys(release);
+  if (fields.length !== generatedReleaseFields.length || generatedReleaseFields.some((field) => !Object.hasOwn(release, field))) {
+    fail('generated chart release notification must contain exactly the v1 release identity fields');
+  }
+  return {
+    event_type: 'pacman-chart-release',
+    client_payload: {
+      schema_version: 1,
+      release: Object.fromEntries(generatedReleaseFields.map((field) => [field, release[field]])),
+    },
+  };
+}
+
+function serializeRepositoryDispatch(payload) {
+  const clientPayload = payload?.client_payload;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+    || !clientPayload || typeof clientPayload !== 'object' || Array.isArray(clientPayload)) {
+    fail(`repository_dispatch POST ${repositoryDispatchPath} requires a JSON client_payload object`);
+  }
+  if (Object.keys(clientPayload).length > 10) {
+    fail(`repository_dispatch POST ${repositoryDispatchPath} client_payload exceeds 10 top-level properties`);
+  }
+  let body;
+  try { body = JSON.stringify(payload); }
+  catch { fail(`repository_dispatch POST ${repositoryDispatchPath} body must be valid JSON`); }
+  if (typeof body !== 'string') fail(`repository_dispatch POST ${repositoryDispatchPath} body must be valid JSON`);
+  if (Buffer.byteLength(body, 'utf8') >= 65_536) {
+    fail(`repository_dispatch POST ${repositoryDispatchPath} JSON body must be less than 65536 UTF-8 bytes`);
+  }
+  return body;
 }
 
 function validateIdentity(identity) {
@@ -225,9 +267,11 @@ async function checkpoint(api, stage) {
   await api.checkpoint?.(stage);
 }
 
-export async function publishChart({ identity: inputIdentity, api, candidateValidation, releaseAssets, publicAttempts = 5, retryDelayMs = 5000 }) {
+export async function publishChart({ identity: inputIdentity, api, candidateValidation, releaseAssets, publicAttempts = maxPublicAttempts, retryDelayMs = 10000, publicWaitMs = maxPublicWaitMs }) {
   if (!api) fail('publication API is required');
-  if (!Number.isInteger(publicAttempts) || publicAttempts < 1) fail('publicAttempts must be a positive integer');
+  if (!Number.isSafeInteger(publicAttempts) || publicAttempts < 1 || publicAttempts > maxPublicAttempts) fail(`publicAttempts must be an integer from 1 to ${maxPublicAttempts}`);
+  if (!Number.isFinite(retryDelayMs) || retryDelayMs < 0 || retryDelayMs > maxPublicWaitMs) fail(`retryDelayMs must be a finite number from 0 to ${maxPublicWaitMs}`);
+  if (!Number.isFinite(publicWaitMs) || publicWaitMs < 1 || publicWaitMs > maxPublicWaitMs) fail(`publicWaitMs must be a finite number from 1 to ${maxPublicWaitMs}`);
   const identity = validateIdentity(inputIdentity);
   assertGeneratedSourceCandidate(identity, candidateValidation);
   let generatedAssets = null;
@@ -313,7 +357,25 @@ export async function publishChart({ identity: inputIdentity, api, candidateVali
 
   let verifiedPublic = false;
   let lastPublicError = 'public package or Helm index is unavailable';
+  let lastPublicTime = -Infinity;
+  const currentTime = () => {
+    const value = api.now?.() ?? performance.now();
+    if (!Number.isFinite(value) || value < lastPublicTime) fail('public-read clock must return finite, monotonic values');
+    lastPublicTime = value;
+    return value;
+  };
+  const publicDeadline = currentTime() + publicWaitMs;
+  let publicChecks = 0;
+  let finalBoundaryCheckUsed = false;
   for (let attempt = 1; attempt <= publicAttempts; attempt += 1) {
+    if (attempt > 1) {
+      const now = currentTime();
+      if (now >= publicDeadline) {
+        if (finalBoundaryCheckUsed || now - publicDeadline > maxPublicSleepOvershootMs) break;
+        finalBoundaryCheckUsed = true;
+      }
+    }
+    publicChecks = attempt;
     try {
       const publication = await api.readPublicPublication(identity);
       if (publication?.packageBytes && sha256(Buffer.from(publication.packageBytes)) === assetChecksum
@@ -325,29 +387,37 @@ export async function publishChart({ identity: inputIdentity, api, candidateVali
     } catch (error) {
       lastPublicError = error.message;
     }
-    if (attempt < publicAttempts) await api.sleep(retryDelayMs);
+    const remainingMs = publicDeadline - currentTime();
+    if (!verifiedPublic && attempt < publicAttempts && remainingMs > 0) {
+      await api.sleep(Math.min(retryDelayMs, remainingMs));
+    }
   }
-  if (!verifiedPublic) fail(`public publication for ${identity.tag} failed verification after ${publicAttempts} attempts: ${lastPublicError}`);
+  if (!verifiedPublic) fail(`public publication for ${identity.tag} failed verification after ${publicChecks} attempts: ${lastPublicError}`);
   await checkpoint(api, 'public-checksum');
 
-  const payload = {
-    event_type: 'pacman-chart-release',
-    client_payload: {
+  const payload = generatedAssets
+    ? encodeGeneratedReleaseNotification({
       app_version: identity.appVersion,
       chart_version: identity.version,
       image_digest: identity.imageDigest,
       source_commit: identity.sourceCommit,
-      ...(generatedAssets ? {
-        source_repository: `https://github.com/${identity.sourceRepository}`,
-        package_reference: `https://github.com/${identity.distributionRepository}/releases/download/${identity.tag}/${identity.filename}`,
-        package_sha256: assetChecksum,
-        chart_release_reference: `https://github.com/${identity.distributionRepository}/releases/download/${identity.tag}/chart-release-record.json`,
-        chart_release_sha256: sha256(generatedAssets['chart-release-record.json']),
-        compatibility_lock_reference: `https://github.com/${identity.distributionRepository}/releases/download/${identity.tag}/consumer-compatibility-lock.json`,
-        compatibility_lock_sha256: sha256(generatedAssets['consumer-compatibility-lock.json']),
-      } : {}),
-    },
-  };
+      source_repository: `https://github.com/${identity.sourceRepository}`,
+      package_reference: `https://github.com/${identity.distributionRepository}/releases/download/${identity.tag}/${identity.filename}`,
+      package_sha256: assetChecksum,
+      chart_release_reference: `https://github.com/${identity.distributionRepository}/releases/download/${identity.tag}/chart-release-record.json`,
+      chart_release_sha256: sha256(generatedAssets['chart-release-record.json']),
+      compatibility_lock_reference: `https://github.com/${identity.distributionRepository}/releases/download/${identity.tag}/consumer-compatibility-lock.json`,
+      compatibility_lock_sha256: sha256(generatedAssets['consumer-compatibility-lock.json']),
+    })
+    : {
+      event_type: 'pacman-chart-release',
+      client_payload: {
+        app_version: identity.appVersion,
+        chart_version: identity.version,
+        image_digest: identity.imageDigest,
+        source_commit: identity.sourceCommit,
+      },
+    };
   await api.dispatchNotification(payload);
   await checkpoint(api, 'notification');
 
@@ -390,7 +460,7 @@ export function createLiveAdapter(inputIdentity, dependencies = {}) {
   if (!token) fail('GH_TOKEN is required to repair the GitHub release');
   if (!dispatchToken) fail('RELEASE_AUTOMATION_TOKEN is required to notify pacman-for-k8s');
 
-  async function request(url, { allowNotFound = false, ...options } = {}) {
+  async function request(url, { allowNotFound = false, includeHeaders = false, ...options } = {}) {
     const response = await fetchRequest(url, {
       ...options,
       headers: {
@@ -405,12 +475,45 @@ export function createLiveAdapter(inputIdentity, dependencies = {}) {
       const detail = (await response.text()).slice(0, 500);
       throw new Error(`GitHub API ${response.status}: ${detail}`);
     }
-    if (response.status === 204) return null;
-    return response.json();
+    if (response.status === 204) return includeHeaders ? { data: null, headers: response.headers } : null;
+    const data = await response.json();
+    return includeHeaders ? { data, headers: response.headers } : data;
   }
 
   async function getRelease(tag) {
-    return request(`${apiBase}/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`, { allowNotFound: true });
+    const published = await request(`${apiBase}/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`, { allowNotFound: true });
+    if (published) {
+      if (published.tag_name !== tag) fail(`release lookup for ${tag} returned a different tag`);
+      return published;
+    }
+
+    const collectionUrl = new URL(`${apiBase}/repos/${repo}/releases`);
+    collectionUrl.searchParams.set('per_page', '100');
+    collectionUrl.searchParams.set('page', '1');
+    let pageUrl = collectionUrl.toString();
+    const visitedPages = new Set();
+    const matches = [];
+    while (pageUrl) {
+      if (visitedPages.has(pageUrl)) fail(`release listing for ${tag} repeated a page`);
+      visitedPages.add(pageUrl);
+      const { data, headers } = await request(pageUrl, { includeHeaders: true });
+      if (!Array.isArray(data)) fail(`GitHub API returned an invalid release list for ${tag}`);
+      matches.push(...data.filter((release) => release?.tag_name === tag));
+
+      const nextLink = headers.get('link')?.split(/,\s*(?=<)/).find((entry) => /;\s*rel="?next"?\s*(?:;|$)/i.test(entry));
+      const nextUrlText = nextLink?.match(/<([^>]+)>/)?.[1];
+      if (!nextUrlText) {
+        pageUrl = null;
+        continue;
+      }
+      const nextUrl = new URL(nextUrlText);
+      if (nextUrl.origin !== apiBase || nextUrl.pathname !== collectionUrl.pathname || nextUrl.username || nextUrl.password) {
+        fail(`release listing for ${tag} returned an invalid pagination URL`);
+      }
+      pageUrl = nextUrl.toString();
+    }
+    if (matches.length > 1) fail(`multiple releases found for tag ${tag}`);
+    return matches[0] ?? null;
   }
 
   async function inspectPackage(bytes) {
@@ -486,7 +589,7 @@ export function createLiveAdapter(inputIdentity, dependencies = {}) {
       const assets = release.assets.filter((asset) => asset.name === filename);
       if (assets.length > 1) fail(`release ${tag} has multiple assets named ${filename}`);
       if (!assets.length) return null;
-      const response = await fetch(assets[0].url, { headers: { Accept: 'application/octet-stream', Authorization: `Bearer ${token}` } });
+      const response = await fetchRequest(assets[0].url, { headers: { Accept: 'application/octet-stream', Authorization: `Bearer ${token}` } });
       if (!response.ok) throw new Error(`could not download ${filename} from release ${tag}: HTTP ${response.status}`);
       return Buffer.from(await response.arrayBuffer());
     },
@@ -560,17 +663,23 @@ export function createLiveAdapter(inputIdentity, dependencies = {}) {
     },
     sleep: (duration) => new Promise((resolvePromise) => setTimeout(resolvePromise, duration)),
     async dispatchNotification(payload) {
-      const response = await fetchRequest(`${apiBase}/repos/saintdle/pacman-for-k8s/dispatches`, {
-        method: 'POST',
-        headers: {
-          Accept: 'application/vnd.github+json',
-          Authorization: `Bearer ${dispatchToken}`,
-          'X-GitHub-Api-Version': '2022-11-28',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      });
-      if (!response.ok) throw new Error(`promotion notification failed: HTTP ${response.status}`);
+      const body = serializeRepositoryDispatch(payload);
+      let response;
+      try {
+        response = await fetchRequest(`${apiBase}${repositoryDispatchPath}`, {
+          method: 'POST',
+          headers: {
+            Accept: 'application/vnd.github+json',
+            Authorization: `Bearer ${dispatchToken}`,
+            'X-GitHub-Api-Version': '2022-11-28',
+            'Content-Type': 'application/json',
+          },
+          body,
+        });
+      } catch {
+        fail(`repository_dispatch POST ${repositoryDispatchPath} failed before receiving an HTTP status`);
+      }
+      if (!response.ok) fail(`repository_dispatch POST ${repositoryDispatchPath} failed: HTTP ${response.status}`);
     },
   };
 }
