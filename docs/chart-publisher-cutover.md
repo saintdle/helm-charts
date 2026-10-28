@@ -57,19 +57,49 @@ change.
 
 ## Recovery after source retirement
 
-For an interrupted generated publication, first check the selected authority,
-immutable release, and exact Pages package and index bytes. Any approved
-replay of a published release must rerun the original successful generated
-distribution workflow run, preserving its commit and source/package identity.
-For chart `0.7.20`, the verified replay was attempt 2 of the original
+For any recovery, first confirm that `pacman` is the selected publisher
+authority and bind the operation to the original validated source commit,
+distribution commit, chart version, image digest, package checksum, and tag.
+Inspect the visible release and all existing immutable assets, plus the exact
+Pages package and index bytes. Stop if an existing tag, asset, package, or
+same-version Pages index entry conflicts with that identity.
+
+### Completed-release replay
+
+For a release whose record assets and Pages package/index are already
+complete, any separately approved replay must rerun the original successful
+generated distribution workflow run, preserving its commit and
+source/package identity. For chart `0.7.20`, the verified replay was attempt 2
+of the original
 [distribution run 40652927950](https://github.com/saintdle/helm-charts/actions/runs/40652927950)
 at commit
 [`1381632438f8f54088996d0cb86bf6f1d16e8602`](https://github.com/saintdle/helm-charts/commit/1381632438f8f54088996d0cb86bf6f1d16e8602).
 Do not dispatch against the latest source or rebuild released package bytes.
-Compare the immutable releases, package and record assets, tags, and Pages
-index before and after; accept a replay only when those public identities are
-unchanged. Never relabel source provenance or reuse a version for different
-contents.
+Compare the immutable release, package and record assets, tag, and Pages index
+before and after; accept a completed-release replay only when those public
+identities are unchanged. Never relabel source provenance or reuse a version
+for different contents.
+
+### Partial-publication recovery
+
+The publisher can make a GitHub release visible before adding its chart
+release record, compatibility lock, or Pages package/index entry. A failed
+originating run can therefore leave a visible release with an incomplete
+publication and no successful run to replay. Diagnose the failure first. When
+retry is appropriate and separately approved, rerun only the original failed
+exact-identity generated distribution workflow run with its original
+validated source and distribution identity. Allow it to complete only missing
+records, lock, or Pages package/index entries; preserve every existing asset,
+package, tag, and index entry byte-for-byte. Verify the completed immutable
+assets and public Pages package and index against the original package
+checksum, and wait for public readiness before notifying consumers.
+
+Do not dispatch a fresh latest-source run, accept a rebuilt package with a
+different checksum, or relabel source provenance to repair a partial release.
+If a publisher code or configuration fix is needed for the original run to
+succeed, stop and require a maintainer-reviewed repair plan bound to the
+original source commit, distribution commit, chart version, image digest,
+package bytes and checksum, and tag before attempting recovery.
 
 The retained-source rollback procedure is no longer available in this tree. A
 legacy publisher can be selected only after a separately reviewed restoration
